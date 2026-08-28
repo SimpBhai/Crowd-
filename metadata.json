@@ -1,0 +1,11 @@
+{
+  "name": "Crowd GPS Tracker",
+  "description": "Real-time GPS crowd tracking on OpenStreetMap with role and movement status filters, direct messaging, peer calling, and super admin audit logs.",
+  "requestFramePermissions": [
+    "geolocation",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

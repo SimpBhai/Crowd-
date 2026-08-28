@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+.custom-crowd-marker {
+  background: transparent !important;
+  border: none !important;
+}
+
+/* Ensure Leaflet container takes full height without clipping */
+.leaflet-container {
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
