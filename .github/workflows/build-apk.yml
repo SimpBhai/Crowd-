@@ -24,16 +24,17 @@ jobs:
         with:
           node-version: 22
 
-      - name: Set up Java JDK 17
+      - name: Set up Java JDK 21 (LTS)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
           cache: 'gradle'
 
-      - name: Accept Android SDK Licenses
+      - name: Accept Android SDK Licenses & Prepare SDK 36
         run: |
           yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses 2>/dev/null || yes | sdkmanager --licenses 2>/dev/null || true
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" 2>/dev/null || true
 
       - name: Install Project Dependencies
         run: npm install --no-audit
@@ -58,6 +59,9 @@ jobs:
             console.log('Updated capacitor.config.json with live server:', targetUrl);
           "
           npx cap sync android
+          # Ensure compileSdkVersion is 36 to satisfy AndroidX 1.11.0 / 1.17.0 requirements
+          sed -i 's/compileSdkVersion = [0-9]\+/compileSdkVersion = 36/g' android/variables.gradle || true
+          sed -i 's/targetSdkVersion = [0-9]\+/targetSdkVersion = 36/g' android/variables.gradle || true
 
       - name: Build Android APK with Gradle
         run: |
