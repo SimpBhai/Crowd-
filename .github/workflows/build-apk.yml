@@ -23,7 +23,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
 
       - name: Set up Java JDK 17
         uses: actions/setup-java@v4
@@ -37,7 +36,7 @@ jobs:
           yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses 2>/dev/null || yes | sdkmanager --licenses 2>/dev/null || true
 
       - name: Install Project Dependencies
-        run: if [ -f package-lock.json ]; then npm ci; else npm install; fi
+        run: npm install --no-audit
 
       - name: Build Web Production Assets
         run: npm run build
