@@ -1,6 +1,6 @@
 {
   "name": "Crowd GPS Tracker",
-  "description": "Real-time GPS crowd tracking on OpenStreetMap with role and movement status filters, direct messaging, peer calling, and super admin audit logs.",
+  "description": "Real-time protest crowd management and dispatch system on Google Satellite Hybrid maps with global assembly beacons, individual user waypoint assignments, squad management, live GPS telemetry, turn-by-turn routing, and zero-latency audio calling.",
   "requestFramePermissions": [
     "geolocation",
     "microphone"

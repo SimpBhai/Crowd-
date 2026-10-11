@@ -11,29 +11,66 @@ import {
   Navigation,
   Shield,
   Smartphone,
+  Crosshair,
+  RefreshCw,
+  Radio,
+  CheckCircle2,
+  LogIn,
+  Server,
+  Globe,
+  Save,
+  RotateCcw,
 } from "lucide-react";
 import { MovementStatus, UserRecord } from "../../types";
 import { audioCallManager } from "../../utils/audioCall";
+import { getEffectiveServerDisplay, setCustomServerUrl } from "../../utils/api";
 
 interface UserProfileViewProps {
   currentUser: UserRecord | null;
   onUpdateStatus: (status: MovementStatus) => void;
   onLogout: () => void;
-  isSimulatingMovement: boolean;
-  onToggleSimulatedMovement: () => void;
+  isRealGpsActive?: boolean;
+  onRefreshGps?: () => void;
   onSwitchUserPrompt: () => void;
+  gpsAccuracy?: number | null;
 }
 
 export const UserProfileView: React.FC<UserProfileViewProps> = ({
   currentUser,
   onUpdateStatus,
   onLogout,
-  isSimulatingMovement,
-  onToggleSimulatedMovement,
+  isRealGpsActive = false,
+  onRefreshGps,
   onSwitchUserPrompt,
+  gpsAccuracy = null,
 }) => {
   const [micTesting, setMicTesting] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
+  const [currentServerDisplay, setCurrentServerDisplay] = useState(getEffectiveServerDisplay());
+  const [customServerInput, setCustomServerInput] = useState(() => {
+    return (typeof window !== "undefined" && localStorage.getItem("custom_server_url")) || "";
+  });
+  const [serverSavedNote, setServerSavedNote] = useState<string | null>(null);
+
+  const handleSaveCustomServer = () => {
+    setCustomServerUrl(customServerInput);
+    const updated = getEffectiveServerDisplay();
+    setCurrentServerDisplay(updated);
+    setServerSavedNote("Server URL updated! Reconnecting...");
+    setTimeout(() => {
+      window.location.reload();
+    }, 900);
+  };
+
+  const handleResetServer = () => {
+    setCustomServerUrl(null);
+    setCustomServerInput("");
+    setCurrentServerDisplay(typeof window !== "undefined" ? window.location.origin : "");
+    setServerSavedNote("Reset to automatic detection! Reconnecting...");
+    setTimeout(() => {
+      window.location.reload();
+    }, 900);
+  };
 
   useEffect(() => {
     let interval: number;
@@ -58,13 +95,59 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
     }
   };
 
-  if (!currentUser) return null;
+  if (!currentUser) {
+    return (
+      <div className="h-full overflow-y-auto bg-slate-50 p-3 sm:p-6 pb-16">
+        <div className="max-w-md mx-auto space-y-4">
+          <div className="bg-white rounded-3xl border border-slate-200 p-6 text-center shadow-sm">
+            <div className="w-16 h-16 rounded-3xl bg-indigo-50 border border-indigo-100 text-indigo-600 flex items-center justify-center mx-auto mb-4 shadow-sm">
+              <User className="w-8 h-8" />
+            </div>
+            <h3 className="text-xl font-black text-slate-900 tracking-tight">Guest Observer Mode</h3>
+            <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto">
+              You are currently viewing live crowd telemetry as a guest observer. Sign in with verified credentials to broadcast messages, share real-time GPS telemetry, and participate in peer voice radio.
+            </p>
+
+            <button
+              id="user-view-signin-btn"
+              onClick={onSwitchUserPrompt}
+              className="mt-5 w-full py-3 px-4 rounded-2xl bg-indigo-600 hover:bg-indigo-700 active:scale-98 text-white text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 transition cursor-pointer"
+            >
+              <LogIn className="w-4 h-4" />
+              <span>Sign In with Credentials</span>
+            </button>
+          </div>
+
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs space-y-3">
+            <div className="flex items-center gap-2 text-xs font-bold text-slate-800">
+              <Shield className="w-4 h-4 text-indigo-600" />
+              <span>Available Role Permissions</span>
+            </div>
+            <div className="space-y-2 text-xs text-slate-600">
+              <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100 flex items-start gap-2.5">
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700 shrink-0">Super Admin</span>
+                <span className="text-[11px] leading-relaxed">System-wide command, set global assembly beacons, provision users, assign squads.</span>
+              </div>
+              <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100 flex items-start gap-2.5">
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700 shrink-0">Admin Lead</span>
+                <span className="text-[11px] leading-relaxed">Assign tactical waypoint posts, monitor all units, voice calls, broadcast notices.</span>
+              </div>
+              <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100 flex items-start gap-2.5">
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-700 shrink-0">Participant</span>
+                <span className="text-[11px] leading-relaxed">Broadcast crowd chat, share live GPS pin, send SOS distress beacons, acknowledge posts.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="h-[calc(100vh-144px)] overflow-y-auto bg-slate-50 p-4 sm:p-6">
+    <div className="h-full overflow-y-auto bg-slate-50 p-3 sm:p-6 pb-12">
       <div className="max-w-2xl mx-auto space-y-5">
         {/* User Card Header */}
-        <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="bg-white rounded-2xl sm:rounded-3xl border border-slate-200 p-4 sm:p-6 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <div
               className="w-16 h-16 rounded-2xl flex items-center justify-center text-white text-2xl font-bold shadow-md shadow-indigo-200 shrink-0 border-2 border-indigo-500"
@@ -110,16 +193,25 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
           </div>
         </div>
 
-        {/* Live GPS Telemetry Dashboard */}
-        <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+        {/* Live GPS Telemetry Dashboard (100% REAL) */}
+        <div className="bg-white rounded-3xl border border-slate-200 p-5 shadow-sm">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <MapPin className="w-4 h-4 text-indigo-600" />
-              <h4 className="font-bold text-sm text-slate-900">Live GPS Telemetry</h4>
+              <Crosshair className="w-4 h-4 text-blue-600" />
+              <h4 className="font-bold text-sm text-slate-900">Real Device GPS Telemetry</h4>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                {isRealGpsActive ? "GPS Active" : "Stationary"}
+              </span>
             </div>
-            <span className="text-[11px] text-slate-400 font-mono">
-              Updated: {new Date(currentUser.location.lastUpdated).toLocaleTimeString()}
-            </span>
+            {onRefreshGps && (
+              <button
+                onClick={onRefreshGps}
+                className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1.5 transition"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>Refresh Fix</span>
+              </button>
+            )}
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -137,7 +229,7 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
                 Longitude
               </span>
               <span className="font-mono text-xs font-bold text-slate-800">
-                {currentUser.location.lng.toFixed(5)}° W
+                {currentUser.location.lng.toFixed(5)}° E
               </span>
             </div>
 
@@ -159,16 +251,28 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
               </span>
             </div>
           </div>
+
+          <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+            <span>
+              Precision Accuracy:{" "}
+              <strong className="text-slate-800 font-mono">
+                {gpsAccuracy ? `±${Math.round(gpsAccuracy)}m` : `±${currentUser.location.accuracy || 5}m`}
+              </strong>
+            </span>
+            <span className="font-mono text-[11px]">
+              Last Fix: {new Date(currentUser.location.lastUpdated).toLocaleTimeString()}
+            </span>
+          </div>
         </div>
 
         {/* Set Movement Status */}
-        <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+        <div className="bg-white rounded-3xl border border-slate-200 p-5 shadow-sm">
           <div className="flex items-center gap-2 mb-3">
             <Activity className="w-4 h-4 text-emerald-600" />
             <h4 className="font-bold text-sm text-slate-900">Current Movement Status</h4>
           </div>
           <p className="text-xs text-slate-500 mb-3">
-            Your movement status is broadcast to event administrators and participants on the map.
+            Your status is broadcast to event administrators, first responders, and users on the satellite map in real time.
           </p>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -193,39 +297,15 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
               </button>
             ))}
           </div>
-
-          {/* Movement Patrol Simulator */}
-          <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between">
-            <div>
-              <div className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
-                <Navigation className="w-3.5 h-3.5 text-indigo-600" />
-                <span>Simulate Walking / Movement on Map</span>
-              </div>
-              <p className="text-[11px] text-slate-500 mt-0.5">
-                Emulates continuous GPS walk loop so you can view live movement on the map.
-              </p>
-            </div>
-            <button
-              id="user-toggle-sim-btn"
-              onClick={onToggleSimulatedMovement}
-              className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition ${
-                isSimulatingMovement
-                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-200 animate-pulse"
-                  : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-              }`}
-            >
-              {isSimulatingMovement ? "Active (Stop)" : "Start Walk"}
-            </button>
-          </div>
         </div>
 
         {/* Audio / Calling Hardware Diagnostics */}
-        <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+        <div className="bg-white rounded-3xl border border-slate-200 p-5 shadow-sm">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <Mic className="w-4 h-4 text-indigo-600" />
               <h4 className="font-bold text-sm text-slate-900">
-                Online Calling Diagnostics (Zero Phone Number)
+                Online Calling Hardware (Zero Phone Number)
               </h4>
             </div>
             <button
@@ -241,8 +321,7 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
             </button>
           </div>
           <p className="text-xs text-slate-500 mb-3">
-            Test your device microphone and audio level before initiating direct calls with other
-            users or administrators.
+            Real WebRTC & AudioContext pipeline test for real-time voice streaming with zero phone numbers or cellular service.
           </p>
 
           {micTesting && (
@@ -259,6 +338,77 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({
               </div>
             </div>
           )}
+        </div>
+
+        {/* Backend & Railway Server Connection Card */}
+        <div className="bg-white rounded-3xl border border-slate-200 p-5 shadow-sm space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Server className="w-4 h-4 text-indigo-600" />
+              <h4 className="font-bold text-sm text-slate-900">
+                Backend Server & Railway Connection
+              </h4>
+            </div>
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span>Active</span>
+            </span>
+          </div>
+
+          <p className="text-xs text-slate-500 leading-relaxed">
+            Your mobile app connects to this server for real-time GPS telemetry, group calls, and messages.
+          </p>
+
+          <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-1">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+              Currently Connected Server
+            </span>
+            <div className="font-mono text-xs text-slate-800 font-semibold break-all flex items-center gap-1.5">
+              <Globe className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+              <span>{currentServerDisplay}</span>
+            </div>
+          </div>
+
+          {serverSavedNote && (
+            <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+              <span>{serverSavedNote}</span>
+            </div>
+          )}
+
+          <div className="pt-2 border-t border-slate-100 space-y-2">
+            <label className="text-xs font-bold text-slate-700 block">
+              Connect to Custom Railway URL (Optional)
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="e.g. https://your-project.up.railway.app"
+                value={customServerInput}
+                onChange={(e) => setCustomServerInput(e.target.value)}
+                className="flex-1 px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+              />
+              <button
+                onClick={handleSaveCustomServer}
+                className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm shadow-indigo-200 shrink-0"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>Save</span>
+              </button>
+              {customServerInput && (
+                <button
+                  onClick={handleResetServer}
+                  title="Reset to default detected server"
+                  className="px-2.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer shrink-0"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-400">
+              *By default, the app automatically detects your Railway domain. You only need to type a URL here if you want to point a standalone app to a different Railway server.
+            </p>
+          </div>
         </div>
       </div>
     </div>

@@ -46,18 +46,26 @@ export const DirectCallModal: React.FC<DirectCallModalProps> = ({
   const isOutgoingCalling = call.status === "calling" && !call.isIncoming;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="w-full max-w-sm bg-slate-900 text-white rounded-3xl shadow-2xl border border-slate-800 p-6 text-center overflow-hidden relative">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200 overflow-y-auto">
+      <div className="w-full max-w-sm bg-slate-900 text-white rounded-3xl shadow-2xl border border-slate-800 p-5 sm:p-6 text-center overflow-hidden relative my-auto">
         {/* Subtle background radar glow */}
         <div className="absolute -top-24 left-1/2 -translate-x-1/2 w-64 h-64 bg-indigo-500/15 rounded-full blur-3xl pointer-events-none" />
 
-        {/* Security / No Phone Number Badge */}
-        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-800/90 border border-slate-700 text-slate-300 text-[11px] font-semibold mb-6 shadow-sm">
-          <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-          <span>Direct Peer Audio (No Phone #)</span>
+        {/* Security / Channel Badge */}
+        <div className="flex flex-wrap items-center justify-center gap-1.5 mb-6">
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-800/90 border border-slate-700 text-slate-300 text-[11px] font-semibold shadow-sm">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+            <span>{call.callType === "group" ? "Squad Voice Channel" : "Direct Peer Audio"} (No Phone #)</span>
+          </div>
+
+          {call.autoAnswer && (
+            <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-extrabold animate-pulse">
+              <span>⚡ AUTO-PICKUP INTERCOM</span>
+            </div>
+          )}
         </div>
 
-        {/* User Avatar with Pulsing Waves */}
+        {/* User / Squad Avatar with Pulsing Waves */}
         <div className="relative mx-auto w-28 h-28 mb-5 flex items-center justify-center">
           {call.status === "connected" && (
             <>
@@ -82,16 +90,24 @@ export const DirectCallModal: React.FC<DirectCallModalProps> = ({
           )}
 
           <div className="relative w-24 h-24 rounded-full bg-gradient-to-tr from-indigo-800 to-indigo-600 border-2 border-indigo-400 flex items-center justify-center text-3xl font-bold shadow-xl">
-            {call.otherUserName.charAt(0)}
+            {call.callType === "group" ? (
+              <span className="text-3xl">👥</span>
+            ) : (
+              call.otherUserName.charAt(0)
+            )}
           </div>
         </div>
 
-        {/* User Info */}
+        {/* User / Squad Info */}
         <h3 className="text-xl font-bold tracking-tight text-white mb-1 truncate">
-          {call.otherUserName}
+          {call.callType === "group" ? (call.groupName || "Squad Channel") : call.otherUserName}
         </h3>
         <div className="text-xs text-indigo-200 capitalize font-medium mb-3">
-          {call.otherUserRole} • Direct Voice Channel
+          {call.callType === "group" ? (
+            <span>Squad Audio Dispatch • {call.participantCount ? `${call.participantCount} units` : "All members"}</span>
+          ) : (
+            <span>{call.otherUserRole} • Direct Voice Channel</span>
+          )}
         </div>
 
         {/* Status / Timer Indicator */}

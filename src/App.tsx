@@ -9,21 +9,30 @@ import { AdminLogsView } from "./components/Admin/AdminLogsView";
 import { AboutView } from "./components/About/AboutView";
 import { UserProfileView } from "./components/User/UserProfileView";
 import { DirectCallModal } from "./components/Calling/DirectCallModal";
+import { CallInitiatePromptModal } from "./components/Calling/CallInitiatePromptModal";
 import {
   UserRecord,
+  UserRole,
   ChatMessage,
   SystemAuditLog,
   ActiveCall,
   FilterOptions,
   TabType,
   MovementStatus,
+  GlobalMarker,
+  UserAssignment,
+  ProtestGroup,
+  InspectionPoint,
 } from "./types";
 import { audioCallManager } from "./utils/audioCall";
+import { apiFetch, getWebSocketUrl } from "./utils/api";
 import { AlertCircle, Ban, ShieldAlert } from "lucide-react";
 
 export default function App() {
   // Authentication & Current User
   const [currentUser, setCurrentUser] = useState<UserRecord | null>(null);
+  const currentUserRef = useRef<UserRecord | null>(null);
+  currentUserRef.current = currentUser;
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
@@ -38,13 +47,33 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
 
-  // Active Calling State
+  // Protest Assembly Markers, Assignments, & Squads
+  const [globalMarker, setGlobalMarker] = useState<GlobalMarker | null>(null);
+  const [assignments, setAssignments] = useState<UserAssignment[]>([]);
+  const [groups, setGroups] = useState<ProtestGroup[]>([]);
+  const [availableTags, setAvailableTags] = useState<string[]>([]);
+  const [inspectionPoints, setInspectionPoints] = useState<InspectionPoint[]>([]);
+
+  // Active Calling State & Tactical Prompt
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
+  const [pendingCallTarget, setPendingCallTarget] = useState<
+    { type: "user"; user: UserRecord } | { type: "group"; group: ProtestGroup } | null
+  >(null);
+  const [isCallPromptOpen, setIsCallPromptOpen] = useState(false);
+  const activeCallRef = useRef<ActiveCall | null>(null);
+  activeCallRef.current = activeCall;
   const callTimerRef = useRef<number | null>(null);
 
-  // Simulation & GPS state
-  const [isSimulatingMovement, setIsSimulatingMovement] = useState(false);
-  const simAngleRef = useRef(0);
+  // Real Device GPS Telemetry
+  const [isRealGpsActive, setIsRealGpsActive] = useState(false);
+  const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
+  const [activeChatRecipientId, setActiveChatRecipientId] = useState<string>("all");
+  const [flyToTarget, setFlyToTarget] = useState<{
+    lat: number;
+    lng: number;
+    zoom?: number;
+    timestamp: number;
+  } | null>(null);
 
   // Filters State
   const [filters, setFilters] = useState<FilterOptions>({
@@ -53,6 +82,9 @@ export default function App() {
     selectedStatuses: [],
     onlyActive: false,
     hasSosOnly: false,
+    selectedGroupId: undefined,
+    selectedTags: [],
+    showAllUnitsAdminOverride: false,
   });
 
   // WebSocket Ref
@@ -62,7 +94,7 @@ export default function App() {
   useEffect(() => {
     const savedToken = localStorage.getItem("crowd_auth_token");
     if (savedToken) {
-      fetch("/api/auth/me", {
+      apiFetch("/api/auth/me", {
         headers: { Authorization: `Bearer ${savedToken}` },
       })
         .then((res) => res.json())
@@ -78,7 +110,6 @@ export default function App() {
           setIsLoginModalOpen(true);
         });
     } else {
-      // Default: show login modal or automatically provide preview login
       setIsLoginModalOpen(true);
     }
   }, []);
@@ -86,7 +117,7 @@ export default function App() {
   // ---------------- INITIAL FETCHES ----------------
   const fetchUsers = useCallback(async () => {
     try {
-      const res = await fetch("/api/users");
+      const res = await apiFetch("/api/users");
       const data = await res.json();
       if (data.users) setUsers(data.users);
     } catch (e) {
@@ -94,9 +125,19 @@ export default function App() {
     }
   }, []);
 
+  const fetchTags = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/tags");
+      const data = await res.json();
+      if (data.tags) setAvailableTags(data.tags);
+    } catch (e) {
+      console.warn("Failed to fetch tags:", e);
+    }
+  }, []);
+
   const fetchMessages = useCallback(async () => {
     try {
-      const res = await fetch("/api/messages");
+      const res = await apiFetch("/api/messages");
       const data = await res.json();
       if (data.messages) setMessages(data.messages);
     } catch (e) {
@@ -106,7 +147,7 @@ export default function App() {
 
   const fetchLogs = useCallback(async () => {
     try {
-      const res = await fetch("/api/admin/logs");
+      const res = await apiFetch("/api/admin/logs");
       const data = await res.json();
       if (data.logs) setLogs(data.logs);
     } catch (e) {
@@ -114,18 +155,62 @@ export default function App() {
     }
   }, []);
 
+  const fetchGlobalMarker = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/global-marker");
+      const data = await res.json();
+      if (data.marker !== undefined) setGlobalMarker(data.marker);
+    } catch (e) {
+      console.warn("Failed to fetch global marker:", e);
+    }
+  }, []);
+
+  const fetchAssignments = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/assignments");
+      const data = await res.json();
+      if (data.assignments) setAssignments(data.assignments);
+    } catch (e) {
+      console.warn("Failed to fetch assignments:", e);
+    }
+  }, []);
+
+  const fetchGroups = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/groups");
+      const data = await res.json();
+      if (data.groups) setGroups(data.groups);
+    } catch (e) {
+      console.warn("Failed to fetch groups:", e);
+    }
+  }, []);
+
+  const fetchInspectionPoints = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/inspection-points");
+      const data = await res.json();
+      if (data.inspectionPoints) setInspectionPoints(data.inspectionPoints);
+    } catch (e) {
+      console.warn("Failed to fetch inspection points:", e);
+    }
+  }, []);
+
   useEffect(() => {
     fetchUsers();
+    fetchTags();
     fetchMessages();
     fetchLogs();
-  }, [fetchUsers, fetchMessages, fetchLogs]);
+    fetchGlobalMarker();
+    fetchAssignments();
+    fetchGroups();
+    fetchInspectionPoints();
+  }, [fetchUsers, fetchTags, fetchMessages, fetchLogs, fetchGlobalMarker, fetchAssignments, fetchGroups, fetchInspectionPoints]);
 
   // ---------------- WEBSOCKET CLIENT & SIGNALING ----------------
   useEffect(() => {
     if (!currentUser) return;
 
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const wsUrl = getWebSocketUrl();
     const socket = new WebSocket(wsUrl);
     wsRef.current = socket;
 
@@ -147,6 +232,23 @@ export default function App() {
           case "init:snapshot": {
             if (payload.users) setUsers(payload.users);
             if (payload.messages) setMessages(payload.messages);
+            if (payload.logs) setLogs(payload.logs);
+            if (payload.globalMarker !== undefined) setGlobalMarker(payload.globalMarker);
+            if (payload.assignments) setAssignments(payload.assignments);
+            if (payload.groups) setGroups(payload.groups);
+            if (payload.availableTags) setAvailableTags(payload.availableTags);
+            if (payload.inspectionPoints) setInspectionPoints(payload.inspectionPoints);
+            break;
+          }
+
+          case "user:joined": {
+            if (payload.user) {
+              setUsers((prev) => {
+                const map = new Map(prev.map((u) => [u.id, u]));
+                map.set(payload.user.id, payload.user);
+                return Array.from(map.values());
+              });
+            }
             break;
           }
 
@@ -155,8 +257,7 @@ export default function App() {
               setUsers((prev) => {
                 const map = new Map(prev.map((u) => [u.id, u]));
                 payload.users.forEach((updatedUser: UserRecord) => {
-                  // Keep self location if currently broadcasting local GPS
-                  if (updatedUser.id === currentUser.id && isSimulatingMovement) return;
+                  if (currentUserRef.current && updatedUser.id === currentUserRef.current.id && isRealGpsActive) return;
                   map.set(updatedUser.id, updatedUser);
                 });
                 return Array.from(map.values());
@@ -167,17 +268,22 @@ export default function App() {
 
           case "user:location_update": {
             if (payload.user) {
-              setUsers((prev) =>
-                prev.map((u) => (u.id === payload.user.id ? payload.user : u))
-              );
+              setUsers((prev) => {
+                const map = new Map(prev.map((u) => [u.id, u]));
+                map.set(payload.user.id, payload.user);
+                return Array.from(map.values());
+              });
             }
             break;
           }
 
           case "chat:new_message": {
             if (payload.message) {
-              setMessages((prev) => [...prev, payload.message]);
-              if (currentTab !== "messages" && payload.message.senderId !== currentUser.id) {
+              setMessages((prev) => {
+                if (prev.some((m) => m.id === payload.message.id)) return prev;
+                return [...prev, payload.message];
+              });
+              if (currentTab !== "messages" && payload.message.senderId !== currentUser?.id) {
                 setUnreadMessagesCount((c) => c + 1);
               }
             }
@@ -186,81 +292,361 @@ export default function App() {
 
           case "sos:alert": {
             if (payload.message) {
-              setMessages((prev) => [...prev, payload.message]);
+              setMessages((prev) => {
+                if (prev.some((m) => m.id === payload.message.id)) return prev;
+                return [...prev, payload.message];
+              });
             }
             if (payload.user) {
               setUsers((prev) =>
                 prev.map((u) => (u.id === payload.user.id ? payload.user : u))
               );
             }
-            break;
-          }
-
-          case "log:new": {
-            if (payload.log) {
-              setLogs((prev) => [payload.log, ...prev]);
-            }
+            audioCallManager.playSosAlarm();
             break;
           }
 
           case "user:banned": {
-            if (payload.user) {
-              setUsers((prev) =>
-                prev.map((u) => (u.id === payload.user.id ? payload.user : u))
+            if (payload.targetUserId === currentUser.id) {
+              setCurrentUser((curr) =>
+                curr
+                  ? {
+                      ...curr,
+                      isBanned: true,
+                      banReason: payload.reason,
+                    }
+                  : null
               );
-              if (payload.user.id === currentUser.id) {
-                setCurrentUser((curr) => (curr ? { ...curr, isBanned: true } : null));
-              }
+              alert(
+                `Account Warning: You have been suspended by Administration.\nReason: ${payload.reason}`
+              );
             }
-            break;
-          }
-
-          case "account:banned": {
-            setCurrentUser((curr) =>
-              curr ? { ...curr, isBanned: true, banReason: payload.reason } : null
+            setUsers((prev) =>
+              prev.map((u) =>
+                u.id === payload.targetUserId
+                  ? { ...u, isBanned: true, banReason: payload.reason, isOnline: false }
+                  : u
+              )
             );
+            fetchLogs();
             break;
           }
 
           case "user:unbanned": {
-            if (payload.user) {
-              setUsers((prev) =>
-                prev.map((u) => (u.id === payload.user.id ? payload.user : u))
+            if (payload.targetUserId === currentUser.id) {
+              setCurrentUser((curr) =>
+                curr
+                  ? {
+                      ...curr,
+                      isBanned: false,
+                      banReason: undefined,
+                    }
+                  : null
               );
-              if (payload.user.id === currentUser.id) {
-                setCurrentUser((curr) =>
-                  curr ? { ...curr, isBanned: false, banReason: undefined } : null
-                );
+              alert("Your account suspension has been lifted by Administration.");
+            }
+            setUsers((prev) =>
+              prev.map((u) =>
+                u.id === payload.targetUserId
+                  ? { ...u, isBanned: false, banReason: undefined }
+                  : u
+              )
+            );
+            fetchLogs();
+            break;
+          }
+
+          // ---------------- GLOBAL MARKER SIGNALING ----------------
+          case "global_marker:updated": {
+            setGlobalMarker(payload.marker);
+            break;
+          }
+
+          case "global_marker:cleared": {
+            setGlobalMarker(null);
+            break;
+          }
+
+          // ---------------- INDIVIDUAL USER ASSIGNMENT SIGNALING ----------------
+          case "assignment:updated": {
+            if (payload.assignment) {
+              setAssignments((prev) => {
+                const filtered = prev.filter((a) => a.userId !== payload.assignment.userId);
+                return [...filtered, payload.assignment];
+              });
+              setUsers((prev) =>
+                prev.map((u) =>
+                  u.id === payload.assignment.userId
+                    ? { ...u, assignedPost: payload.assignment }
+                    : u
+                )
+              );
+              if (currentUser.id === payload.assignment.userId) {
+                setCurrentUser((u) => (u ? { ...u, assignedPost: payload.assignment } : null));
               }
             }
             break;
           }
 
-          // ---------------- DIRECT CALLING SIGNALING ----------------
+          case "assignment:deleted": {
+            setAssignments((prev) => prev.filter((a) => a.userId !== payload.userId));
+            setUsers((prev) =>
+              prev.map((u) => (u.id === payload.userId ? { ...u, assignedPost: undefined } : u))
+            );
+            if (currentUser.id === payload.userId) {
+              setCurrentUser((u) => (u ? { ...u, assignedPost: undefined } : null));
+            }
+            break;
+          }
+
+          case "assignment:status_change": {
+            setAssignments((prev) =>
+              prev.map((a) => (a.userId === payload.userId ? { ...a, status: payload.status } : a))
+            );
+            setUsers((prev) =>
+              prev.map((u) =>
+                u.id === payload.userId && u.assignedPost
+                  ? { ...u, assignedPost: { ...u.assignedPost, status: payload.status } }
+                  : u
+              )
+            );
+            if (currentUser.id === payload.userId) {
+              setCurrentUser((u) =>
+                u && u.assignedPost
+                  ? { ...u, assignedPost: { ...u.assignedPost, status: payload.status } }
+                  : u
+              );
+            }
+            break;
+          }
+
+          // ---------------- PROTEST SQUADS SIGNALING ----------------
+          case "group:created": {
+            if (payload.group) {
+              setGroups((prev) => [...prev.filter((g) => g.id !== payload.group.id), payload.group]);
+            }
+            break;
+          }
+
+          case "group:updated": {
+            if (payload.group) {
+              setGroups((prev) =>
+                prev.map((g) => (g.id === payload.group.id ? payload.group : g))
+              );
+            }
+            break;
+          }
+
+          case "group:deleted": {
+            setGroups((prev) => prev.filter((g) => g.id !== payload.groupId));
+            break;
+          }
+
+          case "group:members_changed": {
+            if (payload.group) {
+              setGroups((prev) =>
+                prev.map((g) => (g.id === payload.group.id ? payload.group : g))
+              );
+              fetchUsers();
+            }
+            break;
+          }
+
+          // ---------------- INSPECTION POINTS SIGNALING ----------------
+          case "inspection_point:updated": {
+            if (payload.points) {
+              setInspectionPoints(payload.points);
+            } else if (payload.point) {
+              setInspectionPoints((prev) => {
+                const filtered = prev.filter((p) => p.id !== payload.point.id);
+                return [...filtered, payload.point];
+              });
+            }
+            break;
+          }
+
+          case "inspection_point:deleted": {
+            if (payload.points) {
+              setInspectionPoints(payload.points);
+            } else if (payload.pointId) {
+              setInspectionPoints((prev) => prev.filter((p) => p.id !== payload.pointId));
+            }
+            break;
+          }
+
+          // ---------------- DIRECT & GROUP CALLING SIGNALING ----------------
           case "call:incoming": {
+            const isAutoAnswer = !!payload.autoAnswer;
+            if (isAutoAnswer) {
+              // Tactical Intercom Auto-Pickup!
+              audioCallManager.playConnectChime();
+              setActiveCall({
+                callId: `call-${Date.now()}`,
+                callType: payload.callType || "direct",
+                groupId: payload.groupId,
+                groupName: payload.groupName,
+                otherUserId: payload.callerId,
+                otherUserName: payload.callerName,
+                otherUserRole: payload.callerRole,
+                isIncoming: true,
+                autoAnswer: true,
+                status: "connected",
+                duration: 0,
+                isMuted: false,
+                isSpeakerOn: true,
+                participantCount: payload.participantCount,
+              });
+
+              audioCallManager.requestMicrophone().then(() => {
+                audioCallManager.startAudioStreamBroadcast((chunk, sampleRate) => {
+                  if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                    if (payload.callType === "group" && payload.groupId) {
+                      wsRef.current.send(
+                        JSON.stringify({
+                          type: "call:audio_data",
+                          callType: "group",
+                          groupId: payload.groupId,
+                          audioChunk: chunk,
+                          sampleRate,
+                        })
+                      );
+                    } else {
+                      wsRef.current.send(
+                        JSON.stringify({
+                          type: "call:audio_data",
+                          targetUserId: payload.callerId,
+                          audioChunk: chunk,
+                          sampleRate,
+                        })
+                      );
+                    }
+                  }
+                });
+              });
+
+              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.send(
+                  JSON.stringify({
+                    type: "call:accept",
+                    callerId: payload.callerId,
+                    targetUserId: currentUser.id,
+                  })
+                );
+              }
+              break;
+            }
+
+            // Normal Ringing Mode (User must approve)
             audioCallManager.startIncomingRingtone();
+
+            // Mobile hardware vibration for incoming voice call
+            if ("vibrate" in navigator) {
+              try {
+                navigator.vibrate([400, 150, 400, 150, 600, 200, 600]);
+              } catch (_) {}
+            }
+
+            // System Web Push Notification
+            if ("Notification" in window && Notification.permission === "granted") {
+              try {
+                if ("serviceWorker" in navigator && navigator.serviceWorker.controller) {
+                  navigator.serviceWorker.ready.then((reg) => {
+                    const notifyOpts: any = {
+                      body: `Direct Voice Channel from ${payload.callerRole.toUpperCase()} — Tap to Answer`,
+                      icon: "/manifest-icon.png",
+                      badge: "/manifest-icon.png",
+                      tag: "incoming-call",
+                      requireInteraction: true,
+                      vibrate: [400, 150, 400, 150, 600, 200, 600],
+                      data: { isCall: true, callerId: payload.callerId, callerName: payload.callerName, callerRole: payload.callerRole },
+                      actions: [
+                        { action: "answer", title: "📞 Answer Call" },
+                        { action: "dismiss", title: "✕ Decline" }
+                      ]
+                    };
+                    reg.showNotification(`📞 Incoming Call: ${payload.callerName}`, notifyOpts);
+                  });
+                } else {
+                  new Notification(`📞 Incoming Call: ${payload.callerName}`, {
+                    body: `Direct Voice Channel from ${payload.callerRole.toUpperCase()}`,
+                    requireInteraction: true,
+                  });
+                }
+              } catch (err) {
+                console.warn("Notification notice:", err);
+              }
+            }
+
             setActiveCall({
               callId: `call-${Date.now()}`,
+              callType: payload.callType || "direct",
+              groupId: payload.groupId,
+              groupName: payload.groupName,
               otherUserId: payload.callerId,
               otherUserName: payload.callerName,
               otherUserRole: payload.callerRole,
               isIncoming: true,
+              autoAnswer: false,
               status: "ringing",
               duration: 0,
               isMuted: false,
               isSpeakerOn: true,
+              participantCount: payload.participantCount,
+            });
+            break;
+          }
+
+          case "call:group_started": {
+            audioCallManager.playConnectChime();
+            setActiveCall((prev) => (prev ? { ...prev, status: "connected" } : null));
+            audioCallManager.startAudioStreamBroadcast((chunk, sampleRate) => {
+              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.send(
+                  JSON.stringify({
+                    type: "call:audio_data",
+                    callType: "group",
+                    groupId: payload.groupId,
+                    audioChunk: chunk,
+                    sampleRate,
+                  })
+                );
+              }
             });
             break;
           }
 
           case "call:accepted": {
             audioCallManager.playConnectChime();
+            const targetId = payload.targetUserId || activeCallRef.current?.otherUserId;
             setActiveCall((prev) => (prev ? { ...prev, status: "connected" } : null));
+
+            if (targetId) {
+              audioCallManager.startAudioStreamBroadcast((chunk, sampleRate) => {
+                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                  wsRef.current.send(
+                    JSON.stringify({
+                      type: "call:audio_data",
+                      targetUserId: targetId,
+                      audioChunk: chunk,
+                      sampleRate,
+                    })
+                  );
+                }
+              });
+            }
+            break;
+          }
+
+          case "call:audio_data": {
+            if (payload.audioChunk) {
+              audioCallManager.playAudioChunk(payload.audioChunk, payload.sampleRate);
+            }
             break;
           }
 
           case "call:rejected": {
             audioCallManager.playEndChime();
+            audioCallManager.cleanupCall();
             setActiveCall(null);
             break;
           }
@@ -274,6 +660,7 @@ export default function App() {
 
           case "call:unavailable": {
             audioCallManager.playEndChime();
+            audioCallManager.cleanupCall();
             alert(payload.reason || "User is currently unreachable.");
             setActiveCall(null);
             break;
@@ -295,7 +682,7 @@ export default function App() {
       socket.close();
       wsRef.current = null;
     };
-  }, [currentUser, currentTab, isSimulatingMovement]);
+  }, [currentUser, currentTab, isRealGpsActive, fetchLogs, fetchUsers]);
 
   // Call duration timer
   useEffect(() => {
@@ -314,21 +701,115 @@ export default function App() {
     };
   }, [activeCall?.status]);
 
-  // ---------------- REAL BROWSER GPS TRACKING ----------------
+  // ---------------- PWA SERVICE WORKER & WAKE-LOCK ----------------
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isPwaInstallable, setIsPwaInstallable] = useState(false);
+  const wakeLockRef = useRef<any>(null);
+
   useEffect(() => {
-    if (!currentUser || currentUser.isBanned || isSimulatingMovement) return;
+    // 1. Service Worker Registration
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker
+        .register("/sw.js")
+        .then((reg) => {
+          console.log("[PWA] Service Worker registered with scope:", reg.scope);
+        })
+        .catch((err) => {
+          console.warn("[PWA] Service Worker registration note:", err);
+        });
+
+      const handleSwMessage = (event: MessageEvent) => {
+        if (event.data && event.data.type === "NOTIFICATION_CALL_ANSWER") {
+          handleAcceptCall();
+        }
+      };
+      navigator.serviceWorker.addEventListener("message", handleSwMessage);
+    }
+
+    // 2. Web Screen Wake Lock to prevent phone screen from sleeping during marches
+    const requestWakeLock = async () => {
+      try {
+        if ("wakeLock" in navigator) {
+          wakeLockRef.current = await (navigator as any).wakeLock.request("screen");
+        }
+      } catch (e) {
+        console.warn("Screen wake lock note:", e);
+      }
+    };
+
+    requestWakeLock();
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        requestWakeLock();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    // 3. BeforeInstallPrompt for 1-tap PWA Install Banner
+    const installHandler = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setIsPwaInstallable(true);
+    };
+    window.addEventListener("beforeinstallprompt", installHandler);
+
+    // 4. Request Notification Permission if default
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", installHandler);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (wakeLockRef.current) {
+        wakeLockRef.current.release().catch(() => {});
+      }
+    };
+  }, []);
+
+  const handleInstallPwa = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === "accepted") {
+      setIsPwaInstallable(false);
+    }
+    setDeferredPrompt(null);
+  };
+
+  // ---------------- 100% REAL DEVICE BROWSER GPS TRACKING ----------------
+  useEffect(() => {
+    const userId = currentUser?.id;
+    const isBanned = currentUser?.isBanned;
+    if (!userId || isBanned) return;
 
     if ("geolocation" in navigator) {
       const watchId = navigator.geolocation.watchPosition(
         (pos) => {
-          const lat = pos.coords.latitude;
-          const lng = pos.coords.longitude;
-          const speed = pos.coords.speed !== null ? pos.coords.speed * 3.6 : undefined; // m/s to km/h
-          const heading = pos.coords.heading !== null ? pos.coords.heading : undefined;
-          const altitude = pos.coords.altitude !== null ? pos.coords.altitude : undefined;
-          const accuracy = pos.coords.accuracy;
+          if (!pos || !pos.coords) return;
+          const lat = Number(pos.coords.latitude);
+          const lng = Number(pos.coords.longitude);
 
-          // Update local state
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+            console.warn("Received invalid non-finite GPS coordinates:", pos.coords);
+            return;
+          }
+
+          const speed =
+            pos.coords.speed !== null && Number.isFinite(pos.coords.speed)
+              ? pos.coords.speed * 3.6
+              : undefined; // km/h
+          const heading =
+            pos.coords.heading !== null && Number.isFinite(pos.coords.heading)
+              ? pos.coords.heading
+              : undefined;
+          const accuracy = Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : undefined;
+
+          setIsRealGpsActive(true);
+          if (accuracy !== undefined) setGpsAccuracy(accuracy);
+
+          // Update local state smoothly
           setCurrentUser((curr) =>
             curr
               ? {
@@ -339,7 +820,6 @@ export default function App() {
                     lng,
                     speed,
                     heading,
-                    altitude,
                     accuracy,
                     lastUpdated: new Date().toISOString(),
                   },
@@ -347,7 +827,31 @@ export default function App() {
               : null
           );
 
-          // Broadcast via WS
+          setUsers((prev) =>
+            prev.map((u) =>
+              u.id === userId
+                ? {
+                    ...u,
+                    location: {
+                      ...u.location,
+                      lat,
+                      lng,
+                      speed,
+                      heading,
+                      accuracy,
+                      lastUpdated: new Date().toISOString(),
+                    },
+                    isOnline: true,
+                  }
+                : u
+            )
+          );
+
+          // Save last known fix to localStorage for offline cache
+          try {
+            localStorage.setItem("last_known_gps", JSON.stringify({ lat, lng, speed, heading, accuracy, time: Date.now() }));
+          } catch (_) {}
+
           if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
             wsRef.current.send(
               JSON.stringify({
@@ -356,48 +860,128 @@ export default function App() {
                 lng,
                 speed,
                 heading,
-                altitude,
                 accuracy,
               })
             );
           }
         },
         (err) => {
-          console.warn("Geolocation watchPosition notice:", err.message);
+          console.warn("GPS tracking status notice:", err.message);
+          setIsRealGpsActive(false);
         },
-        { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
+        {
+          enableHighAccuracy: true,
+          maximumAge: 1000,
+          timeout: 15000,
+        }
       );
 
-      return () => navigator.geolocation.clearWatch(watchId);
+      return () => {
+        navigator.geolocation.clearWatch(watchId);
+      };
     }
-  }, [currentUser?.id, currentUser?.isBanned, isSimulatingMovement]);
+  }, [currentUser?.id, currentUser?.isBanned]);
 
-  // ---------------- SIMULATED PATROL WALK LOOP ----------------
-  useEffect(() => {
-    if (!isSimulatingMovement || !currentUser) return;
+  // Trigger manual GPS refresh
+  const handleRefreshGps = useCallback(() => {
+    if ("geolocation" in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          if (!pos || !pos.coords) return;
+          const lat = Number(pos.coords.latitude);
+          const lng = Number(pos.coords.longitude);
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
 
-    const centerLat = 40.768;
-    const centerLng = -73.978;
-    const radius = 0.0035; // ~400m walk loop
+          const speed =
+            pos.coords.speed !== null && Number.isFinite(pos.coords.speed)
+              ? pos.coords.speed * 3.6
+              : undefined;
+          const heading =
+            pos.coords.heading !== null && Number.isFinite(pos.coords.heading)
+              ? pos.coords.heading
+              : undefined;
+          const accuracy = Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : undefined;
 
-    const interval = setInterval(() => {
-      simAngleRef.current = (simAngleRef.current + 0.08) % (2 * Math.PI);
-      const lat = centerLat + Math.sin(simAngleRef.current) * radius;
-      const lng = centerLng + Math.cos(simAngleRef.current) * radius;
-      const heading = Math.round((((simAngleRef.current + Math.PI / 2) * 180) / Math.PI) % 360);
-      const speed = 4.6 + Math.random() * 0.8; // ~5 km/h walking speed
+          setIsRealGpsActive(true);
+          if (accuracy !== undefined) setGpsAccuracy(accuracy);
+
+          setCurrentUser((curr) =>
+            curr
+              ? {
+                  ...curr,
+                  location: {
+                    ...curr.location,
+                    lat,
+                    lng,
+                    speed,
+                    heading,
+                    accuracy,
+                    lastUpdated: new Date().toISOString(),
+                  },
+                }
+              : null
+          );
+
+          const myId = currentUser?.id;
+          if (myId) {
+            setUsers((prev) =>
+              prev.map((u) =>
+                u.id === myId
+                  ? {
+                      ...u,
+                      location: {
+                        ...u.location,
+                        lat,
+                        lng,
+                        speed,
+                        heading,
+                        accuracy,
+                        lastUpdated: new Date().toISOString(),
+                      },
+                      isOnline: true,
+                    }
+                  : u
+              )
+            );
+          }
+
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(
+              JSON.stringify({
+                type: "gps:update",
+                lat,
+                lng,
+                speed,
+                heading,
+                accuracy,
+              })
+            );
+          }
+        },
+        (err) => {
+          console.warn("GPS refresh notice:", err);
+        },
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 8000 }
+      );
+    }
+  }, [currentUser?.id]);
+
+  // Update coordinates manually (e.g. tap on map)
+  const handleUpdateCoordinates = useCallback(
+    (lat: number, lng: number) => {
+      if (!currentUser) return;
+      const validLat = Number(lat);
+      const validLng = Number(lng);
+      if (!Number.isFinite(validLat) || !Number.isFinite(validLng)) return;
 
       setCurrentUser((curr) =>
         curr
           ? {
               ...curr,
-              movementStatus: "walking",
               location: {
                 ...curr.location,
-                lat,
-                lng,
-                heading,
-                speed,
+                lat: validLat,
+                lng: validLng,
                 lastUpdated: new Date().toISOString(),
               },
             }
@@ -409,13 +993,10 @@ export default function App() {
           u.id === currentUser.id
             ? {
                 ...u,
-                movementStatus: "walking",
                 location: {
                   ...u.location,
-                  lat,
-                  lng,
-                  heading,
-                  speed,
+                  lat: validLat,
+                  lng: validLng,
                   lastUpdated: new Date().toISOString(),
                 },
               }
@@ -427,18 +1008,14 @@ export default function App() {
         wsRef.current.send(
           JSON.stringify({
             type: "gps:update",
-            lat,
-            lng,
-            heading,
-            speed,
-            movementStatus: "walking",
+            lat: validLat,
+            lng: validLng,
           })
         );
       }
-    }, 1800);
-
-    return () => clearInterval(interval);
-  }, [isSimulatingMovement, currentUser?.id]);
+    },
+    [currentUser]
+  );
 
   // ---------------- USER ACTIONS ----------------
 
@@ -454,104 +1031,165 @@ export default function App() {
     setCurrentUser(null);
     setAuthToken(null);
     setIsLoginModalOpen(true);
-    audioCallManager.cleanupCall();
-    setActiveCall(null);
+    if (wsRef.current) wsRef.current.close();
   };
 
-  const handleTriggerSos = async () => {
+  const handleUpdateStatus = async (status: MovementStatus) => {
     if (!currentUser) return;
     try {
-      const res = await fetch("/api/sos", {
+      const res = await apiFetch("/api/users/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: currentUser.id, movementStatus: status }),
+      });
+      const data = await res.json();
+      if (data.user) {
+        setCurrentUser(data.user);
+        setUsers((prev) => prev.map((u) => (u.id === data.user.id ? data.user : u)));
+      }
+    } catch (e) {
+      console.error("Failed to update status:", e);
+    }
+  };
+
+  const handleTriggerSos = async (customNote?: string) => {
+    if (!currentUser) return;
+    try {
+      const res = await apiFetch("/api/users/sos", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           userId: currentUser.id,
-          lat: currentUser.location.lat,
-          lng: currentUser.location.lng,
-          note: "Emergency signal broadcast from mobile navigation client",
+          note: customNote || "SOS! Immediate field assistance requested.",
         }),
       });
       const data = await res.json();
       if (data.user) {
         setCurrentUser(data.user);
+        setUsers((prev) => prev.map((u) => (u.id === data.user.id ? data.user : u)));
       }
-    } catch (err) {
-      console.error("SOS trigger error:", err);
+    } catch (e) {
+      console.error("Failed to trigger SOS:", e);
     }
   };
 
   const handleSendMessage = async (
-    recipientId: string,
+    recipientId: string = "all",
     content: string,
-    isSosAlert?: boolean,
-    attachedLocation?: { lat: number; lng: number }
+    isSos?: boolean,
+    location?: { lat: number; lng: number }
   ) => {
-    if (!currentUser) return;
+    if (!currentUser) {
+      setIsLoginModalOpen(true);
+      return;
+    }
+    if (!content || !content.trim()) return;
     try {
-      await fetch("/api/messages", {
+      const res = await apiFetch("/api/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken || localStorage.getItem("crowd_auth_token") || ""}`,
+        },
         body: JSON.stringify({
           senderId: currentUser.id,
-          recipientId,
-          content,
-          isSosAlert,
-          attachedLocation,
+          recipientId: recipientId || "all",
+          content: content.trim(),
+          isSosAlert: !!isSos,
+          attachedLocation: location || (isSos ? currentUser.location : undefined),
         }),
       });
+      const data = await res.json();
+      if (!res.ok) {
+        console.warn("Message broadcast warning:", data.error || "Failed to broadcast message.");
+        return;
+      }
+      if (data.message) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === data.message.id)) return prev;
+          return [...prev, data.message];
+        });
+      }
     } catch (e) {
-      console.error("Send message error:", e);
+      console.error("Failed to send message:", e);
     }
   };
 
-  const handleUpdateStatus = async (status: MovementStatus) => {
-    if (!currentUser) return;
-    setCurrentUser({ ...currentUser, movementStatus: status });
+  // ---------------- DIRECT & GROUP ONLINE VOICE CALLING ----------------
 
-    try {
-      await fetch("/api/users/location", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: currentUser.id,
-          lat: currentUser.location.lat,
-          lng: currentUser.location.lng,
-          movementStatus: status,
-        }),
-      });
-    } catch (err) {
-      console.warn("Status update error:", err);
-    }
+  const handleStartCall = (targetUser: UserRecord) => {
+    if (!currentUser || targetUser.isBanned || targetUser.id === currentUser.id) return;
+    setPendingCallTarget({ type: "user", user: targetUser });
+    setIsCallPromptOpen(true);
   };
 
-  // Direct Audio Calling Handlers (No Phone Number Needed!)
-  const handleStartCall = async (targetUser: UserRecord) => {
+  const handleStartGroupCall = (targetGroup: ProtestGroup) => {
     if (!currentUser) return;
-    if (targetUser.id === currentUser.id) return;
+    setPendingCallTarget({ type: "group", group: targetGroup });
+    setIsCallPromptOpen(true);
+  };
+
+  const handleConfirmCall = async (autoAnswer: boolean) => {
+    if (!pendingCallTarget || !currentUser) return;
+    setIsCallPromptOpen(false);
 
     await audioCallManager.requestMicrophone();
     audioCallManager.startOutgoingRingtone();
 
-    setActiveCall({
-      callId: `call-${Date.now()}`,
-      otherUserId: targetUser.id,
-      otherUserName: targetUser.displayName,
-      otherUserRole: targetUser.role,
-      isIncoming: false,
-      status: "calling",
-      duration: 0,
-      isMuted: false,
-      isSpeakerOn: true,
-    });
+    if (pendingCallTarget.type === "user") {
+      const targetUser = pendingCallTarget.user;
+      setActiveCall({
+        callId: `call-${Date.now()}`,
+        callType: "direct",
+        otherUserId: targetUser.id,
+        otherUserName: targetUser.displayName,
+        otherUserRole: targetUser.role,
+        isIncoming: false,
+        autoAnswer,
+        status: "calling",
+        duration: 0,
+        isMuted: false,
+        isSpeakerOn: true,
+      });
 
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: "call:initiate",
-          callerId: currentUser.id,
-          targetUserId: targetUser.id,
-        })
-      );
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: "call:initiate",
+            callerId: currentUser.id,
+            targetUserId: targetUser.id,
+            autoAnswer,
+          })
+        );
+      }
+    } else {
+      const targetGroup = pendingCallTarget.group;
+      setActiveCall({
+        callId: `call-${Date.now()}`,
+        callType: "group",
+        groupId: targetGroup.id,
+        groupName: targetGroup.name,
+        otherUserId: targetGroup.id,
+        otherUserName: targetGroup.name,
+        otherUserRole: "admin",
+        isIncoming: false,
+        autoAnswer,
+        status: "calling",
+        duration: 0,
+        isMuted: false,
+        isSpeakerOn: true,
+        participantCount: targetGroup.memberIds.length,
+      });
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: "call:group_initiate",
+            groupId: targetGroup.id,
+            autoAnswer,
+          })
+        );
+      }
     }
   };
 
@@ -568,9 +1206,37 @@ export default function App() {
           type: "call:accept",
           callerId: activeCall.otherUserId,
           targetUserId: currentUser.id,
+          callType: activeCall.callType,
+          groupId: activeCall.groupId,
         })
       );
     }
+
+    // Start streaming real-time mic packets to caller or group
+    audioCallManager.startAudioStreamBroadcast((chunk, sampleRate) => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        if (activeCall.callType === "group" && activeCall.groupId) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: "call:audio_data",
+              callType: "group",
+              groupId: activeCall.groupId,
+              audioChunk: chunk,
+              sampleRate,
+            })
+          );
+        } else {
+          wsRef.current.send(
+            JSON.stringify({
+              type: "call:audio_data",
+              targetUserId: activeCall.otherUserId,
+              audioChunk: chunk,
+              sampleRate,
+            })
+          );
+        }
+      }
+    });
   };
 
   const handleRejectCall = () => {
@@ -599,6 +1265,8 @@ export default function App() {
       wsRef.current.send(
         JSON.stringify({
           type: "call:end",
+          callType: activeCall.callType,
+          groupId: activeCall.groupId,
           targetUserId: activeCall.otherUserId,
           byUserId: currentUser.id,
         })
@@ -611,18 +1279,332 @@ export default function App() {
     if (!activeCall) return;
     const newMute = !activeCall.isMuted;
     audioCallManager.setMuted(newMute);
-    setActiveCall({ ...activeCall, isMuted: newMute });
+    setActiveCall((prev) => (prev ? { ...prev, isMuted: newMute } : null));
   };
 
   const handleToggleSpeaker = () => {
     if (!activeCall) return;
-    setActiveCall({ ...activeCall, isSpeakerOn: !activeCall.isSpeakerOn });
+    setActiveCall((prev) => (prev ? { ...prev, isSpeakerOn: !prev.isSpeakerOn } : null));
   };
 
-  // Super Admin Ban Actions
+  // ---------------- GLOBAL MARKER, INSPECTION, ASSIGNMENT & GROUP HANDLERS ----------------
+
+  const handleAddInspectionPoint = async (data: {
+    title: string;
+    notes?: string;
+    type: InspectionPoint["type"];
+    lat: number;
+    lng: number;
+  }) => {
+    if (!currentUser) return;
+    try {
+      const res = await apiFetch("/api/inspection-points", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: authToken ? `Bearer ${authToken}` : "",
+        },
+        body: JSON.stringify(data),
+      });
+      const resData = await res.json();
+      if (resData.points) setInspectionPoints(resData.points);
+      else if (resData.point) setInspectionPoints((prev) => [...prev, resData.point]);
+    } catch (e) {
+      console.warn("Failed to add inspection point:", e);
+    }
+  };
+
+  const handleMoveInspectionPoint = async (id: string, lat: number, lng: number) => {
+    if (!currentUser) return;
+    try {
+      const res = await apiFetch(`/api/inspection-points/${id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: authToken ? `Bearer ${authToken}` : "",
+        },
+        body: JSON.stringify({ lat, lng }),
+      });
+      const resData = await res.json();
+      if (resData.points) setInspectionPoints(resData.points);
+      else if (resData.point) {
+        setInspectionPoints((prev) => prev.map((p) => (p.id === id ? resData.point : p)));
+      }
+    } catch (e) {
+      console.warn("Failed to move inspection point:", e);
+    }
+  };
+
+  const handleDeleteInspectionPoint = async (id: string) => {
+    if (!currentUser) return;
+    try {
+      const res = await apiFetch(`/api/inspection-points/${id}`, {
+        method: "DELETE",
+        headers: {
+          Authorization: authToken ? `Bearer ${authToken}` : "",
+        },
+      });
+      const resData = await res.json();
+      if (resData.points) setInspectionPoints(resData.points);
+      else setInspectionPoints((prev) => prev.filter((p) => p.id !== id));
+    } catch (e) {
+      console.warn("Failed to delete inspection point:", e);
+    }
+  };
+
+  const handleAssignGroupDestination = async (
+    groupId: string,
+    data: { label: string; lat: number; lng: number; assignAllMembers?: boolean }
+  ) => {
+    if (!currentUser) return;
+    try {
+      const res = await apiFetch(`/api/groups/${groupId}/rally-point`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: authToken ? `Bearer ${authToken}` : "",
+        },
+        body: JSON.stringify({
+          lat: data.lat,
+          lng: data.lng,
+          label: data.label,
+        }),
+      });
+      const resData = await res.json();
+      if (resData.group) {
+        setGroups((prev) => prev.map((g) => (g.id === groupId ? resData.group : g)));
+      }
+
+      if (data.assignAllMembers) {
+        const group = groups.find((g) => g.id === groupId);
+        if (group) {
+          for (const memberId of group.memberIds) {
+            await handleAssignUserMarker(memberId, {
+              title: `${data.label} (Squad)`,
+              instructions: `Converge with ${group.name} at designated waypoint.`,
+              lat: data.lat,
+              lng: data.lng,
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to assign group destination:", e);
+    }
+  };
+
+  const handleSetGlobalMarker = async (data: {
+    title: string;
+    description: string;
+    lat: number;
+    lng: number;
+    radius?: number;
+    targetTime?: string;
+  }) => {
+    if (!currentUser) return;
+    const res = await apiFetch("/api/global-marker", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...data,
+        updatedBy: currentUser.displayName,
+      }),
+    });
+    const result = await res.json();
+    if (result.marker) {
+      setGlobalMarker(result.marker);
+    }
+  };
+
+  const handleClearGlobalMarker = async () => {
+    const res = await apiFetch("/api/global-marker", { method: "DELETE" });
+    if (res.ok) setGlobalMarker(null);
+  };
+
+  const handleAssignUserMarker = async (
+    targetUserId: string,
+    data: { title: string; instructions: string; lat: number; lng: number }
+  ) => {
+    if (!currentUser) return;
+    const res = await apiFetch("/api/assignments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId: targetUserId,
+        ...data,
+        assignedBy: currentUser.displayName,
+      }),
+    });
+    const result = await res.json();
+    if (result.assignment) {
+      setAssignments((prev) => [
+        ...prev.filter((a) => a.userId !== targetUserId),
+        result.assignment,
+      ]);
+      setUsers((prev) =>
+        prev.map((u) => (u.id === targetUserId ? { ...u, assignedPost: result.assignment } : u))
+      );
+    }
+  };
+
+  const handleClearUserAssignment = async (targetUserId: string) => {
+    const res = await fetch(`/api/assignments/${targetUserId}`, { method: "DELETE" });
+    if (res.ok) {
+      setAssignments((prev) => prev.filter((a) => a.userId !== targetUserId));
+      setUsers((prev) =>
+        prev.map((u) => (u.id === targetUserId ? { ...u, assignedPost: undefined } : u))
+      );
+    }
+  };
+
+  const handleUpdateAssignmentStatus = async (status: "pending" | "acknowledged" | "reached") => {
+    if (!currentUser) return;
+    const res = await fetch(`/api/assignments/${currentUser.id}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    const result = await res.json();
+    if (result.assignment) {
+      setAssignments((prev) =>
+        prev.map((a) => (a.userId === currentUser.id ? result.assignment : a))
+      );
+      setCurrentUser((u) => (u ? { ...u, assignedPost: result.assignment } : null));
+    }
+  };
+
+  const handleCreateGroup = async (groupData: {
+    name: string;
+    description: string;
+    color: string;
+    icon?: string;
+    leaderUserId?: string;
+    rallyPoint?: { lat: number; lng: number; label: string };
+    memberIds?: string[];
+  }) => {
+    const res = await apiFetch("/api/groups", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(groupData),
+    });
+    const result = await res.json();
+    if (result.group) {
+      setGroups((prev) => [...prev, result.group]);
+      fetchUsers();
+    }
+  };
+
+  const handleUpdateGroup = async (groupId: string, groupData: any) => {
+    const res = await apiFetch(`/api/groups/${groupId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(groupData),
+    });
+    const result = await res.json();
+    if (result.group) {
+      setGroups((prev) => prev.map((g) => (g.id === groupId ? result.group : g)));
+      fetchUsers();
+    }
+  };
+
+  const handleDeleteGroup = async (groupId: string) => {
+    const res = await apiFetch(`/api/groups/${groupId}`, { method: "DELETE" });
+    if (res.ok) {
+      setGroups((prev) => prev.filter((g) => g.id !== groupId));
+      fetchUsers();
+    }
+  };
+
+  const handleUpdateGroupMembers = async (groupId: string, memberIds: string[]) => {
+    const res = await apiFetch(`/api/groups/${groupId}/members`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memberIds }),
+    });
+    const result = await res.json();
+    if (result.group) {
+      setGroups((prev) => prev.map((g) => (g.id === groupId ? result.group : g)));
+      fetchUsers();
+    }
+  };
+
+  // ---------------- TAG ACTIONS (SUPER ADMIN & SEARCH) ----------------
+
+  const handleCreateTag = async (tag: string) => {
+    try {
+      const res = await apiFetch("/api/tags", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag }),
+      });
+      const data = await res.json();
+      if (data.tags) setAvailableTags(data.tags);
+    } catch (e) {
+      console.warn("Failed to create tag:", e);
+    }
+  };
+
+  const handleDeleteTag = async (tag: string) => {
+    try {
+      const res = await apiFetch(`/api/tags/${encodeURIComponent(tag)}`, { method: "DELETE" });
+      const data = await res.json();
+      if (data.tags) setAvailableTags(data.tags);
+      fetchUsers();
+    } catch (e) {
+      console.warn("Failed to delete tag:", e);
+    }
+  };
+
+  const handleAddUserTag = async (targetUserId: string, tag: string) => {
+    try {
+      const res = await apiFetch(`/api/users/${targetUserId}/tags`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag }),
+      });
+      const data = await res.json();
+      if (data.user) {
+        setUsers((prev) => prev.map((u) => (u.id === targetUserId ? data.user : u)));
+        if (currentUser?.id === targetUserId) {
+          setCurrentUser(data.user);
+        }
+      }
+      if (data.availableTags) setAvailableTags(data.availableTags);
+    } catch (e) {
+      console.warn("Failed to add user tag:", e);
+    }
+  };
+
+  const handleRemoveUserTag = async (targetUserId: string, tag: string) => {
+    try {
+      const res = await apiFetch(`/api/users/${targetUserId}/tags/${encodeURIComponent(tag)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (data.user) {
+        setUsers((prev) => prev.map((u) => (u.id === targetUserId ? data.user : u)));
+        if (currentUser?.id === targetUserId) {
+          setCurrentUser(data.user);
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to remove user tag:", e);
+    }
+  };
+
+  const handleFilterByTag = (tag: string) => {
+    setFilters((prev) => {
+      const selected = prev.selectedTags || [];
+      if (selected.includes(tag)) return prev;
+      return { ...prev, selectedTags: [...selected, tag] };
+    });
+  };
+
+  // ---------------- ADMIN ACTIONS ----------------
+
   const handleBanUser = async (targetUserId: string, reason: string) => {
     if (!currentUser) return;
-    const res = await fetch("/api/admin/ban", {
+    const res = await apiFetch("/api/admin/ban", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -639,7 +1621,7 @@ export default function App() {
 
   const handleUnbanUser = async (targetUserId: string) => {
     if (!currentUser) return;
-    const res = await fetch("/api/admin/unban", {
+    const res = await apiFetch("/api/admin/unban", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -653,22 +1635,65 @@ export default function App() {
     fetchLogs();
   };
 
+  const handleCreateUser = async (userData: {
+    displayName: string;
+    username?: string;
+    password?: string;
+    role: UserRole;
+    tags?: string[];
+    description?: string;
+    phoneOrContact?: string;
+  }) => {
+    if (!currentUser) return;
+    const res = await apiFetch("/api/admin/create-user", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${authToken || localStorage.getItem("crowd_auth_token") || ""}`,
+      },
+      body: JSON.stringify({
+        adminUserId: currentUser.id,
+        ...userData,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Failed to create user account");
+    fetchUsers();
+    fetchLogs();
+    return data.user;
+  };
+
   // Switch to messages tab and select user
   const handleStartChatWithUser = (user: UserRecord) => {
+    if (currentUser && user.id === currentUser.id) {
+      setActiveChatRecipientId("all");
+    } else {
+      setActiveChatRecipientId(user.id);
+    }
     setCurrentTab("messages");
     setSelectedUser(user);
   };
 
-  // Jump from chat coordinate chip to map
-  const handleViewLocationOnMap = (lat: number, lng: number) => {
+  // Jump from search, chat, or admin coordinate chip to map
+  const handleViewLocationOnMap = (lat: number, lng: number, targetUser?: UserRecord) => {
+    const validLat = Number(lat);
+    const validLng = Number(lng);
+    if (!Number.isFinite(validLat) || !Number.isFinite(validLng)) return;
+
     setCurrentTab("home");
-    // Center map on coordinates
-    if ((window as any).L && selectedUser) {
-      setSelectedUser({
-        ...selectedUser,
-        location: { ...selectedUser.location, lat, lng },
-      });
+    const matched =
+      targetUser ||
+      users.find(
+        (u) =>
+          Math.abs(u.location.lat - validLat) < 0.0001 &&
+          Math.abs(u.location.lng - validLng) < 0.0001
+      ) ||
+      null;
+
+    if (matched) {
+      setSelectedUser(matched);
     }
+    setFlyToTarget({ lat: validLat, lng: validLng, zoom: 18, timestamp: Date.now() });
   };
 
   // Summary Metrics
@@ -682,7 +1707,7 @@ export default function App() {
   ).length;
 
   return (
-    <div className="flex flex-col h-screen w-full bg-slate-50 text-slate-900 overflow-hidden font-sans select-none">
+    <div className="fixed inset-0 flex flex-col h-[100dvh] w-full bg-slate-50 text-slate-900 overflow-hidden font-sans select-none overscroll-none">
       {/* Top Application Header */}
       <TopHeader
         currentUser={currentUser}
@@ -708,8 +1733,8 @@ export default function App() {
       )}
 
       {/* Main View Area */}
-      <main className="flex-1 relative overflow-hidden">
-        {/* Tab 1: Home Map View */}
+      <main className="flex-1 min-h-0 relative overflow-hidden w-full">
+        {/* Tab 1: Home Satellite Map View */}
         {currentTab === "home" && (
           <div className="flex flex-col h-full">
             <FilterPanel
@@ -722,9 +1747,18 @@ export default function App() {
                   selectedStatuses: [],
                   onlyActive: false,
                   hasSosOnly: false,
+                  selectedGroupId: undefined,
+                  selectedTags: [],
+                  showAllUnitsAdminOverride: false,
                 })
               }
               totalFilteredCount={users.length}
+              users={users}
+              onSelectUser={setSelectedUser}
+              onLocateUser={handleViewLocationOnMap}
+              groups={groups}
+              availableTags={availableTags}
+              isSuperAdminOrAdmin={currentUser?.role === "admin" || currentUser?.role === "superadmin"}
             />
 
             <div className="flex-1 relative">
@@ -734,13 +1768,32 @@ export default function App() {
                 selectedUser={selectedUser}
                 onSelectUser={setSelectedUser}
                 filters={filters}
-                isSimulatingMovement={isSimulatingMovement}
-                onToggleSimulatedMovement={() =>
-                  setIsSimulatingMovement(!isSimulatingMovement)
-                }
-                onCenterOnUser={() => {}}
                 onStartCall={handleStartCall}
                 onStartChat={handleStartChatWithUser}
+                onStartGroupCall={handleStartGroupCall}
+                onUpdateCoordinates={handleUpdateCoordinates}
+                isRealGpsActive={isRealGpsActive}
+                onRefreshGps={handleRefreshGps}
+                gpsAccuracy={gpsAccuracy}
+                globalMarker={globalMarker}
+                assignments={assignments}
+                groups={groups}
+                availableTags={availableTags}
+                inspectionPoints={inspectionPoints}
+                onFilterByTag={handleFilterByTag}
+                onAddUserTag={handleAddUserTag}
+                onRemoveUserTag={handleRemoveUserTag}
+                onSetGlobalMarker={handleSetGlobalMarker}
+                onClearGlobalMarker={handleClearGlobalMarker}
+                onAssignUserMarker={handleAssignUserMarker}
+                onClearUserAssignment={handleClearUserAssignment}
+                onUpdateAssignmentStatus={handleUpdateAssignmentStatus}
+                onAddInspectionPoint={handleAddInspectionPoint}
+                onMoveInspectionPoint={handleMoveInspectionPoint}
+                onDeleteInspectionPoint={handleDeleteInspectionPoint}
+                onAssignGroupDestination={handleAssignGroupDestination}
+                onUpdateFilters={(newFilters) => setFilters((f) => ({ ...f, ...newFilters }))}
+                flyToTarget={flyToTarget}
               />
             </div>
           </div>
@@ -752,10 +1805,13 @@ export default function App() {
             currentUser={currentUser}
             users={users}
             messages={messages}
+            groups={groups}
             onSendMessage={handleSendMessage}
             onStartCall={handleStartCall}
+            onStartGroupCall={handleStartGroupCall}
             onViewLocationOnMap={handleViewLocationOnMap}
-            initialRecipientId={selectedUser ? selectedUser.id : "all"}
+            initialRecipientId={activeChatRecipientId}
+            onOpenLogin={() => setIsLoginModalOpen(true)}
           />
         )}
 
@@ -765,9 +1821,29 @@ export default function App() {
             currentUser={currentUser}
             users={users}
             logs={logs}
+            globalMarker={globalMarker}
+            assignments={assignments}
+            groups={groups}
+            availableTags={availableTags}
+            onCreateTag={handleCreateTag}
+            onDeleteTag={handleDeleteTag}
+            onAddUserTag={handleAddUserTag}
+            onRemoveUserTag={handleRemoveUserTag}
             onBanUser={handleBanUser}
             onUnbanUser={handleUnbanUser}
             onRefreshLogs={fetchLogs}
+            onSetGlobalMarker={handleSetGlobalMarker}
+            onClearGlobalMarker={handleClearGlobalMarker}
+            onAssignUserMarker={handleAssignUserMarker}
+            onClearUserAssignment={handleClearUserAssignment}
+            onCreateGroup={handleCreateGroup}
+            onUpdateGroup={handleUpdateGroup}
+            onDeleteGroup={handleDeleteGroup}
+            onUpdateGroupMembers={handleUpdateGroupMembers}
+            onCreateUser={handleCreateUser}
+            onStartCall={handleStartCall}
+            onStartGroupCall={handleStartGroupCall}
+            onLocateOnMap={handleViewLocationOnMap}
           />
         )}
 
@@ -780,11 +1856,10 @@ export default function App() {
             currentUser={currentUser}
             onUpdateStatus={handleUpdateStatus}
             onLogout={handleLogout}
-            isSimulatingMovement={isSimulatingMovement}
-            onToggleSimulatedMovement={() =>
-              setIsSimulatingMovement(!isSimulatingMovement)
-            }
+            isRealGpsActive={isRealGpsActive}
+            onRefreshGps={handleRefreshGps}
             onSwitchUserPrompt={() => setIsLoginModalOpen(true)}
+            gpsAccuracy={gpsAccuracy}
           />
         )}
       </main>
@@ -801,6 +1876,17 @@ export default function App() {
         />
       )}
 
+      {/* Tactical Audio Dispatch Ring Mode Prompt (Auto-Pickup vs Direct Ring) */}
+      <CallInitiatePromptModal
+        isOpen={isCallPromptOpen}
+        target={pendingCallTarget}
+        onConfirmCall={handleConfirmCall}
+        onClose={() => {
+          setIsCallPromptOpen(false);
+          setPendingCallTarget(null);
+        }}
+      />
+
       {/* Bottom Bar for Mobile & Desktop Navigation */}
       <BottomBar
         currentTab={currentTab}
@@ -813,10 +1899,11 @@ export default function App() {
         hasActiveCall={activeCall !== null && activeCall.status === "connected"}
       />
 
-      {/* Login Modal */}
+      {/* Login & Unit Registration Modal */}
       <LoginModal
         isOpen={isLoginModalOpen}
         onLoginSuccess={handleLoginSuccess}
+        onClose={() => setIsLoginModalOpen(false)}
       />
     </div>
   );

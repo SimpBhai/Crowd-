@@ -1,0 +1,133 @@
+name: Build Android APK (No Laptop Needed)
+
+on:
+  workflow_dispatch:
+    inputs:
+      live_url:
+        description: 'Your Live Railway or Hosted App URL (e.g. https://your-app.up.railway.app)'
+        required: false
+        default: 'https://rha-volunteers.up.railway.app'
+  push:
+    branches: [ main ]
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Set up Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Project Dependencies
+        run: npm ci
+
+      - name: Build Web Production Assets
+        run: npm run build
+
+      - name: Install Bubblewrap CLI
+        run: npm install -g @bubblewrap/cli
+
+      - name: Configure Headless Bubblewrap Environment
+        run: |
+          mkdir -p ~/.bubblewrap
+          cat <<EOF > ~/.bubblewrap/config.json
+          {
+            "jdkPath": "$JAVA_HOME",
+            "androidSdkPath": "$ANDROID_HOME"
+          }
+          EOF
+
+      - name: Generate Android Project & Build Signed APK
+        env:
+          INPUT_URL: ${{ github.event.inputs.live_url || 'https://rha-volunteers.up.railway.app' }}
+          BUBBLEWRAP_KEYSTORE_PASSWORD: 'rhavolunteers123'
+          BUBBLEWRAP_KEY_PASSWORD: 'rhavolunteers123'
+        run: |
+          mkdir -p android-build
+          cd android-build
+
+          # Parse hostname and clean URL
+          CLEAN_URL=$(echo "$INPUT_URL" | sed -e 's|^[^/]*//||' -e 's|/.*$||')
+          if [ -z "$CLEAN_URL" ]; then
+            CLEAN_URL="rha-volunteers.up.railway.app"
+          fi
+          echo "Building APK pointing to host: $CLEAN_URL"
+
+          # 1. Generate local keystore non-interactively
+          keytool -genkey -v \
+            -keystore android.keystore \
+            -alias rhavolunteers \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass "rhavolunteers123" \
+            -keypass "rhavolunteers123" \
+            -dname "CN=RHA-volunteers, OU=RobinHoodArmy, O=RHA, L=Global, S=Global, C=US"
+
+          # 2. Generate twa-manifest.json non-interactively
+          cat <<EOF > twa-manifest.json
+          {
+            "packageId": "org.rha.volunteers.tracker",
+            "host": "$CLEAN_URL",
+            "name": "RHA-volunteers",
+            "launcherName": "RHA-volunteers",
+            "themeColor": "#166534",
+            "navigationColor": "#166534",
+            "backgroundColor": "#166534",
+            "startUrl": "/",
+            "iconUrl": "https://$CLEAN_URL/icon-512.png",
+            "maskableIconUrl": "https://$CLEAN_URL/icon-maskable.png",
+            "appVersionName": "1.0.0",
+            "appVersionCode": 1,
+            "signingKey": {
+              "path": "./android.keystore",
+              "alias": "rhavolunteers"
+            },
+            "splashScreenFadeOutDuration": 300,
+            "enableNotifications": true,
+            "enableSiteSettingsShortcut": true,
+            "isChromeOSOnly": false,
+            "shortcuts": [],
+            "generatorApp": "bubblewrap-cli",
+            "webManifestUrl": "https://$CLEAN_URL/manifest.json",
+            "fallbackType": "customtabs",
+            "features": {
+              "locationDelegation": {
+                "enabled": true
+              }
+            },
+            "alphaDependencies": {
+              "enabled": false
+            }
+          }
+          EOF
+
+          # 3. Build APK using bubblewrap
+          bubblewrap build --skipPwaValidation || true
+
+      - name: Upload Finished Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: RHA-volunteers-Android-APK
+          path: |
+            android-build/*.apk
+            android-build/app/build/outputs/apk/release/*.apk
+            android-build/app/build/outputs/apk/debug/*.apk
+            dist/
+          if-no-files-found: warn

@@ -39,20 +39,20 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   };
 
   return (
-    <header className="sticky top-0 z-30 w-full bg-white border-b border-slate-200 px-4 sm:px-6 py-2.5 shrink-0 shadow-sm">
-      <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+    <header className="flex-none shrink-0 w-full z-40 bg-white border-b border-slate-200 px-3 sm:px-6 py-2 sm:py-2.5 shadow-sm">
+      <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 sm:gap-3">
         {/* Brand & System Status */}
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-200 shrink-0">
-            <Radio className="w-5 h-5 text-white animate-pulse" />
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl overflow-hidden shadow-sm shrink-0 border border-slate-200 bg-white flex items-center justify-center p-0.5">
+            <img src="/rha-logo.png" alt="RHA-volunteers" className="w-full h-full object-contain rounded-lg" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-bold text-lg sm:text-xl tracking-tight text-slate-900 leading-none">
-                CROWDTRACK<span className="text-indigo-600">LIVE</span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              <span className="font-extrabold text-base sm:text-xl tracking-tight leading-none text-slate-900 select-none">
+                RHA-volunteers
               </span>
               <span
-                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                className={`inline-flex items-center gap-0.5 sm:gap-1 px-1.5 sm:px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-bold border shrink-0 ${
                   isConnected
                     ? "bg-emerald-50 text-emerald-600 border-emerald-200"
                     : "bg-rose-50 text-rose-600 border-rose-200"
@@ -71,14 +71,14 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                 )}
               </span>
             </div>
-            <div className="flex items-center gap-2 mt-0.5">
-              <p className="text-[10px] uppercase tracking-widest text-slate-400 font-semibold">
-                Real-Time Dispatch
+            <div className="flex items-center gap-1.5 sm:gap-2 mt-0.5">
+              <p className="hidden xs:block text-[9px] sm:text-[10px] uppercase tracking-widest text-emerald-600 font-semibold truncate">
+                Robin Hood Army GPS Radar
               </p>
-              <span className="text-slate-300">•</span>
-              <span className="text-[11px] text-slate-500 font-medium">
-                <strong className="text-indigo-600 font-bold">{totalUsersCount}</strong> nodes (
-                <strong className="text-emerald-500 font-bold">{movingUsersCount}</strong> moving)
+              <span className="hidden xs:inline text-slate-300">•</span>
+              <span className="text-[10px] sm:text-[11px] text-slate-500 font-medium truncate">
+                <strong className="text-emerald-600 font-bold">{totalUsersCount}</strong> volunteers (
+                <strong className="text-cyan-500 font-bold">{movingUsersCount}</strong> live)
               </span>
             </div>
           </div>
