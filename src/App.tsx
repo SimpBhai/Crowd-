@@ -26,7 +26,8 @@ import {
 } from "./types";
 import { audioCallManager } from "./utils/audioCall";
 import { apiFetch, getWebSocketUrl } from "./utils/api";
-import { AlertCircle, Ban, ShieldAlert } from "lucide-react";
+import { gpsEngine, GpsTelemetryFix, GpsEngineStatus } from "./utils/gpsTracker";
+import { AlertCircle, Ban, ShieldAlert, CheckCircle, Info, X } from "lucide-react";
 
 export default function App() {
   // Authentication & Current User
@@ -67,6 +68,20 @@ export default function App() {
   // Real Device GPS Telemetry
   const [isRealGpsActive, setIsRealGpsActive] = useState(false);
   const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
+  const [gpsStatusText, setGpsStatusText] = useState<string>("Initializing GPS...");
+  const [tacticalNotice, setTacticalNotice] = useState<{
+    id: string;
+    type: "info" | "warning" | "success" | "emergency";
+    message: string;
+  } | null>(null);
+
+  const showTacticalNotice = useCallback((message: string, type: "info" | "warning" | "success" | "emergency" = "info") => {
+    const id = `notice-${Date.now()}`;
+    setTacticalNotice({ id, type, message });
+    setTimeout(() => {
+      setTacticalNotice((current) => (current?.id === id ? null : current));
+    }, 4500);
+  }, []);
   const [activeChatRecipientId, setActiveChatRecipientId] = useState<string>("all");
   const [flyToTarget, setFlyToTarget] = useState<{
     lat: number;
@@ -317,8 +332,9 @@ export default function App() {
                     }
                   : null
               );
-              alert(
-                `Account Warning: You have been suspended by Administration.\nReason: ${payload.reason}`
+              showTacticalNotice(
+                `Account Warning: You have been suspended by Administration. Reason: ${payload.reason}`,
+                "warning"
               );
             }
             setUsers((prev) =>
@@ -343,7 +359,7 @@ export default function App() {
                     }
                   : null
               );
-              alert("Your account suspension has been lifted by Administration.");
+              showTacticalNotice("Your account suspension has been lifted by Administration.", "success");
             }
             setUsers((prev) =>
               prev.map((u) =>
@@ -661,7 +677,7 @@ export default function App() {
           case "call:unavailable": {
             audioCallManager.playEndChime();
             audioCallManager.cleanupCall();
-            alert(payload.reason || "User is currently unreachable.");
+            showTacticalNotice(payload.reason || "User is currently unreachable.", "warning");
             setActiveCall(null);
             break;
           }
@@ -778,193 +794,104 @@ export default function App() {
     setDeferredPrompt(null);
   };
 
-  // ---------------- 100% REAL DEVICE BROWSER GPS TRACKING ----------------
+  // ---------------- 100% REAL DEVICE BROWSER & HARDWARE GPS TELEMETRY ----------------
   useEffect(() => {
     const userId = currentUser?.id;
     const isBanned = currentUser?.isBanned;
     if (!userId || isBanned) return;
 
-    if ("geolocation" in navigator) {
-      const watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          if (!pos || !pos.coords) return;
-          const lat = Number(pos.coords.latitude);
-          const lng = Number(pos.coords.longitude);
+    // Start continuous multi-tier hardware positioning
+    gpsEngine.startContinuousWatching();
 
-          if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-            console.warn("Received invalid non-finite GPS coordinates:", pos.coords);
-            return;
-          }
+    const unsubscribe = gpsEngine.subscribe(
+      (fix) => {
+        setIsRealGpsActive(fix.source !== "ip_network");
+        if (fix.accuracy !== undefined) setGpsAccuracy(fix.accuracy);
+        if (fix.statusText) setGpsStatusText(fix.statusText);
 
-          const speed =
-            pos.coords.speed !== null && Number.isFinite(pos.coords.speed)
-              ? pos.coords.speed * 3.6
-              : undefined; // km/h
-          const heading =
-            pos.coords.heading !== null && Number.isFinite(pos.coords.heading)
-              ? pos.coords.heading
-              : undefined;
-          const accuracy = Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : undefined;
+        setCurrentUser((curr) =>
+          curr
+            ? {
+                ...curr,
+                location: {
+                  ...curr.location,
+                  lat: fix.lat,
+                  lng: fix.lng,
+                  speed: fix.speed,
+                  heading: fix.heading,
+                  accuracy: fix.accuracy,
+                  lastUpdated: new Date(fix.timestamp).toISOString(),
+                },
+              }
+            : null
+        );
 
-          setIsRealGpsActive(true);
-          if (accuracy !== undefined) setGpsAccuracy(accuracy);
-
-          // Update local state smoothly
-          setCurrentUser((curr) =>
-            curr
+        setUsers((prev) =>
+          prev.map((u) =>
+            u.id === userId
               ? {
-                  ...curr,
+                  ...u,
                   location: {
-                    ...curr.location,
-                    lat,
-                    lng,
-                    speed,
-                    heading,
-                    accuracy,
-                    lastUpdated: new Date().toISOString(),
+                    ...u.location,
+                    lat: fix.lat,
+                    lng: fix.lng,
+                    speed: fix.speed,
+                    heading: fix.heading,
+                    accuracy: fix.accuracy,
+                    lastUpdated: new Date(fix.timestamp).toISOString(),
                   },
+                  isOnline: true,
                 }
-              : null
+              : u
+          )
+        );
+
+        // Forward to real-time WebSocket mesh network
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: "gps:update",
+              lat: fix.lat,
+              lng: fix.lng,
+              speed: fix.speed,
+              heading: fix.heading,
+              accuracy: fix.accuracy,
+            })
           );
-
-          setUsers((prev) =>
-            prev.map((u) =>
-              u.id === userId
-                ? {
-                    ...u,
-                    location: {
-                      ...u.location,
-                      lat,
-                      lng,
-                      speed,
-                      heading,
-                      accuracy,
-                      lastUpdated: new Date().toISOString(),
-                    },
-                    isOnline: true,
-                  }
-                : u
-            )
-          );
-
-          // Save last known fix to localStorage for offline cache
-          try {
-            localStorage.setItem("last_known_gps", JSON.stringify({ lat, lng, speed, heading, accuracy, time: Date.now() }));
-          } catch (_) {}
-
-          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            wsRef.current.send(
-              JSON.stringify({
-                type: "gps:update",
-                lat,
-                lng,
-                speed,
-                heading,
-                accuracy,
-              })
-            );
-          }
-        },
-        (err) => {
-          console.warn("GPS tracking status notice:", err.message);
-          setIsRealGpsActive(false);
-        },
-        {
-          enableHighAccuracy: true,
-          maximumAge: 1000,
-          timeout: 15000,
         }
-      );
-
-      return () => {
-        navigator.geolocation.clearWatch(watchId);
-      };
-    }
-  }, [currentUser?.id, currentUser?.isBanned]);
-
-  // Trigger manual GPS refresh
-  const handleRefreshGps = useCallback(() => {
-    if ("geolocation" in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          if (!pos || !pos.coords) return;
-          const lat = Number(pos.coords.latitude);
-          const lng = Number(pos.coords.longitude);
-          if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-
-          const speed =
-            pos.coords.speed !== null && Number.isFinite(pos.coords.speed)
-              ? pos.coords.speed * 3.6
-              : undefined;
-          const heading =
-            pos.coords.heading !== null && Number.isFinite(pos.coords.heading)
-              ? pos.coords.heading
-              : undefined;
-          const accuracy = Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : undefined;
-
+      },
+      (status, message) => {
+        setGpsStatusText(message);
+        if (status === "permission_denied") {
+          setIsRealGpsActive(false);
+          showTacticalNotice("Location permission denied. Using network approximation.", "warning");
+        } else if (status === "high_accuracy_locked") {
           setIsRealGpsActive(true);
-          if (accuracy !== undefined) setGpsAccuracy(accuracy);
+        }
+      }
+    );
 
-          setCurrentUser((curr) =>
-            curr
-              ? {
-                  ...curr,
-                  location: {
-                    ...curr.location,
-                    lat,
-                    lng,
-                    speed,
-                    heading,
-                    accuracy,
-                    lastUpdated: new Date().toISOString(),
-                  },
-                }
-              : null
-          );
+    return () => {
+      unsubscribe();
+      gpsEngine.stopContinuousWatching();
+    };
+  }, [currentUser?.id, currentUser?.isBanned, showTacticalNotice]);
 
-          const myId = currentUser?.id;
-          if (myId) {
-            setUsers((prev) =>
-              prev.map((u) =>
-                u.id === myId
-                  ? {
-                      ...u,
-                      location: {
-                        ...u.location,
-                        lat,
-                        lng,
-                        speed,
-                        heading,
-                        accuracy,
-                        lastUpdated: new Date().toISOString(),
-                      },
-                      isOnline: true,
-                    }
-                  : u
-              )
-            );
-          }
-
-          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            wsRef.current.send(
-              JSON.stringify({
-                type: "gps:update",
-                lat,
-                lng,
-                speed,
-                heading,
-                accuracy,
-              })
-            );
-          }
-        },
-        (err) => {
-          console.warn("GPS refresh notice:", err);
-        },
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 8000 }
-      );
+  // Trigger manual high-precision GPS refresh
+  const handleRefreshGps = useCallback(async () => {
+    showTacticalNotice("Re-locking high precision GPS satellites...", "info");
+    try {
+      const fix = await gpsEngine.requestDirectFix();
+      if (fix) {
+        showTacticalNotice(
+          `GPS Lock Established (±${Math.round(fix.accuracy || 5)}m)`,
+          "success"
+        );
+      }
+    } catch (e) {
+      console.warn("Manual GPS fix notice:", e);
     }
-  }, [currentUser?.id]);
+  }, [showTacticalNotice]);
 
   // Update coordinates manually (e.g. tap on map)
   const handleUpdateCoordinates = useCallback(
@@ -1022,12 +949,19 @@ export default function App() {
   const handleLoginSuccess = (user: UserRecord, token: string) => {
     setCurrentUser(user);
     setAuthToken(token);
-    localStorage.setItem("crowd_auth_token", token);
+    try {
+      localStorage.setItem("crowd_auth_token", token);
+      localStorage.setItem("crowd_user_id", user.id);
+    } catch (_) {}
     setIsLoginModalOpen(false);
+    showTacticalNotice(`Authenticated as ${user.displayName} (${user.role.toUpperCase()})`, "success");
   };
 
   const handleLogout = () => {
-    localStorage.removeItem("crowd_auth_token");
+    try {
+      localStorage.removeItem("crowd_auth_token");
+      localStorage.removeItem("crowd_user_id");
+    } catch (_) {}
     setCurrentUser(null);
     setAuthToken(null);
     setIsLoginModalOpen(true);
@@ -1401,24 +1335,69 @@ export default function App() {
     radius?: number;
     targetTime?: string;
   }) => {
-    if (!currentUser) return;
-    const res = await apiFetch("/api/global-marker", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...data,
-        updatedBy: currentUser.displayName,
-      }),
-    });
-    const result = await res.json();
-    if (result.marker) {
-      setGlobalMarker(result.marker);
+    // Optimistic instantaneous UI update so the user immediately sees the beacon
+    const optimisticMarker: GlobalMarker = {
+      id: globalMarker?.id || `gm-${Date.now()}`,
+      title: data.title,
+      description: data.description,
+      lat: data.lat,
+      lng: data.lng,
+      radius: data.radius || 150,
+      targetTime: data.targetTime,
+      updatedBy: currentUser?.displayName || "System Commander",
+      updatedAt: new Date().toISOString(),
+    };
+    setGlobalMarker(optimisticMarker);
+    showTacticalNotice(`Assembly Point Beacon Set: ${data.title}`, "success");
+
+    try {
+      const token = authToken || localStorage.getItem("crowd_auth_token") || "";
+      const res = await apiFetch("/api/global-marker", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          ...data,
+          adminUserId: currentUser?.id,
+          userId: currentUser?.id,
+          updatedBy: currentUser?.displayName || "Command Lead",
+        }),
+      });
+      const result = await res.json();
+      if (result.marker) {
+        setGlobalMarker(result.marker);
+      }
+    } catch (err) {
+      console.warn("Global marker sync notice:", err);
     }
   };
 
   const handleClearGlobalMarker = async () => {
-    const res = await apiFetch("/api/global-marker", { method: "DELETE" });
-    if (res.ok) setGlobalMarker(null);
+    // Instantaneous optimistic removal
+    setGlobalMarker(null);
+    showTacticalNotice("Global Assembly Point cleared", "info");
+
+    try {
+      const token = authToken || localStorage.getItem("crowd_auth_token") || "";
+      const res = await apiFetch("/api/global-marker", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          adminUserId: currentUser?.id,
+          userId: currentUser?.id,
+        }),
+      });
+      if (!res.ok) {
+        console.warn("Server reported notice clearing assembly point:", res.status);
+      }
+    } catch (err) {
+      console.warn("Global marker clear notice:", err);
+    }
   };
 
   const handleAssignUserMarker = async (
@@ -1722,6 +1701,36 @@ export default function App() {
         }}
       />
 
+      {/* Floating Tactical Notice Notification Banner */}
+      {tacticalNotice && (
+        <div
+          className={`px-4 py-2 text-xs flex items-center justify-between shadow-md transition-all animate-in slide-in-from-top-2 z-50 ${
+            tacticalNotice.type === "warning"
+              ? "bg-amber-600 text-white"
+              : tacticalNotice.type === "success"
+              ? "bg-emerald-600 text-white"
+              : tacticalNotice.type === "emergency"
+              ? "bg-rose-600 text-white font-bold"
+              : "bg-slate-900 text-slate-100"
+          }`}
+        >
+          <div className="flex items-center gap-2 max-w-3xl mx-auto flex-1">
+            {tacticalNotice.type === "warning" && <AlertCircle className="w-4 h-4 shrink-0" />}
+            {tacticalNotice.type === "success" && <CheckCircle className="w-4 h-4 shrink-0" />}
+            {tacticalNotice.type === "info" && <Info className="w-4 h-4 shrink-0" />}
+            {tacticalNotice.type === "emergency" && <ShieldAlert className="w-4 h-4 shrink-0" />}
+            <span className="font-medium">{tacticalNotice.message}</span>
+          </div>
+          <button
+            onClick={() => setTacticalNotice(null)}
+            className="p-1 hover:bg-white/20 rounded-md transition cursor-pointer text-white"
+            title="Dismiss notice"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Banned User Alert Shield */}
       {currentUser?.isBanned && (
         <div className="bg-rose-600 text-white px-4 py-2.5 text-center text-xs flex items-center justify-center gap-2 shadow-md">
@@ -1775,6 +1784,7 @@ export default function App() {
                 isRealGpsActive={isRealGpsActive}
                 onRefreshGps={handleRefreshGps}
                 gpsAccuracy={gpsAccuracy}
+                gpsStatusText={gpsStatusText}
                 globalMarker={globalMarker}
                 assignments={assignments}
                 groups={groups}

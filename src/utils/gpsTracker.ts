@@ -1,30 +1,51 @@
-// High-Precision Robust GPS Telemetry & Fallback Engine
+// High-Precision Robust GPS Telemetry & Progressive Multi-Tier Positioning Engine
+// Crafted for mission-critical real-time crowd safety, field operations, and mobile devices.
 
 export interface GpsTelemetryFix {
   lat: number;
   lng: number;
   altitude?: number;
-  accuracy?: number;
-  speed?: number; // km/h
-  heading?: number; // 0-359 deg
+  accuracy?: number; // In meters
+  speed?: number; // In km/h
+  heading?: number; // 0-359 degrees
   timestamp: number;
-  source: "high_accuracy_gps" | "standard_gps" | "ip_fallback" | "cached_last_known";
+  source: "high_accuracy_gnss" | "standard_gps" | "ip_network" | "cached_last_known";
+  statusText?: string;
 }
 
-type GpsCallback = (fix: GpsTelemetryFix) => void;
-type GpsStatusCallback = (status: "acquiring" | "active" | "denied" | "unavailable" | "fallback", message?: string) => void;
+export type GpsEngineStatus =
+  | "idle"
+  | "acquiring"
+  | "high_accuracy_locked"
+  | "standard_locked"
+  | "cached"
+  | "network_ip"
+  | "permission_denied"
+  | "unavailable";
+
+export type GpsFixCallback = (fix: GpsTelemetryFix) => void;
+export type GpsStatusCallback = (status: GpsEngineStatus, message: string) => void;
 
 class GpsEngine {
   private watchId: number | null = null;
   private lastFix: GpsTelemetryFix | null = null;
-  private fixCallbacks: Set<GpsCallback> = new Set();
+  private fixCallbacks: Set<GpsFixCallback> = new Set();
   private statusCallbacks: Set<GpsStatusCallback> = new Set();
+  private currentStatus: GpsEngineStatus = "idle";
   private isWatching = false;
-  private isHighAccuracy = true;
-  private permissionState: PermissionState | "unknown" = "unknown";
+  private lastStatusMessage = "GPS initialized";
+  private retryUpgradeTimer: any = null;
 
   constructor() {
-    // Load last known fix from cache
+    this.hydrateFromStorage();
+    this.listenToPermissionChanges();
+  }
+
+  /**
+   * Hydrates the last known position from localStorage for instant 0-latency map rendering
+   */
+  private hydrateFromStorage(): void {
+    if (typeof window === "undefined") return;
     try {
       const cached = localStorage.getItem("last_known_gps_fix");
       if (cached) {
@@ -33,22 +54,26 @@ class GpsEngine {
           this.lastFix = {
             ...parsed,
             source: "cached_last_known",
+            statusText: "Loaded from device cache",
           };
+          this.currentStatus = "cached";
         }
       }
     } catch (_) {}
+  }
 
-    // Check Permissions API if available
+  /**
+   * Monitor browser/WebView permission state changes
+   */
+  private listenToPermissionChanges(): void {
     if (typeof navigator !== "undefined" && navigator.permissions && navigator.permissions.query) {
       try {
-        navigator.permissions.query({ name: "geolocation" as PermissionName }).then((status) => {
-          this.permissionState = status.state;
-          status.onchange = () => {
-            this.permissionState = status.state;
-            if (status.state === "granted") {
+        navigator.permissions.query({ name: "geolocation" as PermissionName }).then((permissionStatus) => {
+          permissionStatus.onchange = () => {
+            if (permissionStatus.state === "granted") {
               this.requestDirectFix();
-            } else if (status.state === "denied") {
-              this.notifyStatus("denied", "Location permission denied in browser settings.");
+            } else if (permissionStatus.state === "denied") {
+              this.setStatus("permission_denied", "Location permission denied in browser or system settings.");
             }
           };
         }).catch(() => {});
@@ -56,10 +81,14 @@ class GpsEngine {
     }
   }
 
-  public subscribe(onFix: GpsCallback, onStatus?: GpsStatusCallback) {
+  public subscribe(onFix: GpsFixCallback, onStatus?: GpsStatusCallback): () => void {
     this.fixCallbacks.add(onFix);
-    if (onStatus) this.statusCallbacks.add(onStatus);
+    if (onStatus) {
+      this.statusCallbacks.add(onStatus);
+      onStatus(this.currentStatus, this.lastStatusMessage);
+    }
 
+    // Immediately replay cached or last known fix to new subscriber
     if (this.lastFix) {
       onFix(this.lastFix);
     }
@@ -70,114 +99,147 @@ class GpsEngine {
     };
   }
 
-  private notifyFix(fix: GpsTelemetryFix) {
-    this.lastFix = fix;
-    try {
-      localStorage.setItem("last_known_gps_fix", JSON.stringify(fix));
-    } catch (_) {}
-    this.fixCallbacks.forEach((cb) => cb(fix));
+  private setStatus(status: GpsEngineStatus, message: string): void {
+    this.currentStatus = status;
+    this.lastStatusMessage = message;
+    this.statusCallbacks.forEach((cb) => cb(status, message));
   }
 
-  private notifyStatus(status: "acquiring" | "active" | "denied" | "unavailable" | "fallback", message?: string) {
-    this.statusCallbacks.forEach((cb) => cb(status, message));
+  private emitFix(fix: GpsTelemetryFix): void {
+    // Coordinate filter: discard non-finite or impossible values
+    if (!Number.isFinite(fix.lat) || !Number.isFinite(fix.lng)) return;
+    if (fix.lat < -90 || fix.lat > 90 || fix.lng < -180 || fix.lng > 180) return;
+
+    // Stationary smoothing filter: suppress micro-jitter when not moving
+    let smoothedFix = { ...fix };
+    if (this.lastFix && fix.accuracy && fix.accuracy > 5) {
+      const distanceMovedMeters = this.calculateDistanceKm(
+        this.lastFix.lat,
+        this.lastFix.lng,
+        fix.lat,
+        fix.lng
+      ) * 1000;
+
+      // If moved less than 3 meters and speed is near zero, damp jitter
+      if (distanceMovedMeters < 3 && (!fix.speed || fix.speed < 1.0)) {
+        smoothedFix.lat = this.lastFix.lat * 0.75 + fix.lat * 0.25;
+        smoothedFix.lng = this.lastFix.lng * 0.75 + fix.lng * 0.25;
+      }
+    }
+
+    this.lastFix = smoothedFix;
+
+    // Cache locally
+    try {
+      localStorage.setItem("last_known_gps_fix", JSON.stringify(smoothedFix));
+    } catch (_) {}
+
+    this.fixCallbacks.forEach((cb) => cb(smoothedFix));
   }
 
   public getLastFix(): GpsTelemetryFix | null {
     return this.lastFix;
   }
 
+  public getStatus(): { status: GpsEngineStatus; message: string } {
+    return { status: this.currentStatus, message: this.lastStatusMessage };
+  }
+
   /**
-   * Request an immediate direct location fix using progressive multi-stage fallback.
+   * Progressive Multi-Tier Direct Fix:
+   * Tier 1: Instant Cache (already active)
+   * Tier 2: Fast Coarse Network/WiFi fix (<1s)
+   * Tier 3: High Precision Satellite Lock (<10s)
+   * Tier 4: Server IP Geolocation fallback
    */
   public async requestDirectFix(): Promise<GpsTelemetryFix | null> {
-    this.notifyStatus("acquiring", "Acquiring direct GPS lock...");
+    this.setStatus("acquiring", "Establishing precision GPS fix...");
 
     if (typeof navigator === "undefined" || !("geolocation" in navigator)) {
-      this.notifyStatus("unavailable", "Geolocation API not supported by this browser.");
-      return this.fallbackIpLocation();
+      this.setStatus("unavailable", "HTML5 Geolocation not supported. Querying network location...");
+      return this.fetchNetworkIpLocation();
     }
 
-    // Step 1: High Accuracy attempt
+    // Step A: Fast coarse fix (WiFi / Cell towers) to get coordinates in <1.5s
     try {
-      const highAccFix = await this.getCurrentPositionPromise({
-        enableHighAccuracy: true,
-        timeout: 6000,
-        maximumAge: 0,
-      });
-      this.notifyStatus("active", "High-accuracy GPS fix acquired");
-      this.notifyFix(highAccFix);
-      return highAccFix;
-    } catch (highErr: any) {
-      console.warn("[GPS] High-accuracy lock failed, trying standard fallback:", highErr?.message);
-    }
-
-    // Step 2: Standard Accuracy attempt (WiFi / Cellular / Cached GPS)
-    try {
-      const standardFix = await this.getCurrentPositionPromise({
+      const coarseFix = await this.queryPositionPromise({
         enableHighAccuracy: false,
-        timeout: 8000,
+        timeout: 3500,
         maximumAge: 30000,
       });
-      this.notifyStatus("active", "Standard GPS fix acquired");
-      this.notifyFix(standardFix);
-      return standardFix;
-    } catch (stdErr: any) {
-      console.warn("[GPS] Standard geolocation failed:", stdErr?.message);
-      if (stdErr?.code === 1) {
+      coarseFix.source = "standard_gps";
+      coarseFix.statusText = `Standard Lock (±${Math.round(coarseFix.accuracy || 25)}m)`;
+      this.setStatus("standard_locked", `Network fix acquired (±${Math.round(coarseFix.accuracy || 25)}m)`);
+      this.emitFix(coarseFix);
+    } catch (_) {
+      // Coarse failed or timed out, proceed directly to high accuracy
+    }
+
+    // Step B: High-Accuracy GNSS/Satellite lock
+    try {
+      const satelliteFix = await this.queryPositionPromise({
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0,
+      });
+      satelliteFix.source = "high_accuracy_gnss";
+      satelliteFix.statusText = `High Precision Satellite Lock (±${Math.round(satelliteFix.accuracy || 4)}m)`;
+      this.setStatus("high_accuracy_locked", `Satellite locked (±${Math.round(satelliteFix.accuracy || 4)}m)`);
+      this.emitFix(satelliteFix);
+      return satelliteFix;
+    } catch (highErr: any) {
+      if (highErr?.code === 1) {
         // PERMISSION_DENIED
-        this.notifyStatus("denied", "Location permission was denied. Please allow location access in your browser bar.");
-      } else {
-        this.notifyStatus("unavailable", "Device GPS signal unavailable. Using IP approximation.");
+        this.setStatus("permission_denied", "Location permission denied. Please allow location access.");
+        return this.fetchNetworkIpLocation();
+      }
+      // If we already have a fix from Step A or cache, retain it
+      if (this.lastFix && this.lastFix.source !== "cached_last_known") {
+        return this.lastFix;
       }
     }
 
-    // Step 3: IP Geolocation Fallback
-    return this.fallbackIpLocation();
+    // Step C: Fallback to server-side / public IP Geolocation
+    return this.fetchNetworkIpLocation();
   }
 
-  private getCurrentPositionPromise(options: PositionOptions): Promise<GpsTelemetryFix> {
+  private queryPositionPromise(options: PositionOptions): Promise<GpsTelemetryFix> {
     return new Promise((resolve, reject) => {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          if (!pos || !pos.coords) {
-            return reject(new Error("Empty position"));
-          }
+          if (!pos || !pos.coords) return reject(new Error("Empty coordinate payload"));
           const lat = Number(pos.coords.latitude);
           const lng = Number(pos.coords.longitude);
-
           if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-            return reject(new Error("Non-finite coordinates received"));
+            return reject(new Error("Non-finite coordinates"));
           }
 
-          // Calculate speed in km/h if available, otherwise compute from last fix
-          let speed: number | undefined = undefined;
-          if (pos.coords.speed !== null && Number.isFinite(pos.coords.speed)) {
-            speed = Math.max(0, pos.coords.speed * 3.6);
-          } else if (this.lastFix) {
+          let speed = pos.coords.speed !== null && Number.isFinite(pos.coords.speed) ? pos.coords.speed * 3.6 : undefined;
+          let heading = pos.coords.heading !== null && Number.isFinite(pos.coords.heading) ? pos.coords.heading : undefined;
+
+          // Estimate speed & heading if walking/driving and previous fix exists
+          if (this.lastFix) {
             const timeDeltaSec = (pos.timestamp - this.lastFix.timestamp) / 1000;
-            if (timeDeltaSec > 1 && timeDeltaSec < 60) {
+            if (timeDeltaSec > 1 && timeDeltaSec < 45) {
               const distKm = this.calculateDistanceKm(this.lastFix.lat, this.lastFix.lng, lat, lng);
-              speed = Math.min(120, (distKm / timeDeltaSec) * 3600);
+              if (speed === undefined) {
+                speed = Math.min(130, (distKm / timeDeltaSec) * 3600);
+              }
+              if (heading === undefined && (speed || 0) > 2) {
+                heading = this.calculateBearing(this.lastFix.lat, this.lastFix.lng, lat, lng);
+              }
             }
-          }
-
-          // Calculate heading
-          let heading: number | undefined = undefined;
-          if (pos.coords.heading !== null && Number.isFinite(pos.coords.heading)) {
-            heading = pos.coords.heading;
-          } else if (this.lastFix && speed && speed > 1.5) {
-            heading = this.calculateBearing(this.lastFix.lat, this.lastFix.lng, lat, lng);
           }
 
           const fix: GpsTelemetryFix = {
             lat,
             lng,
-            altitude: pos.coords.altitude !== null && Number.isFinite(pos.coords.altitude) ? pos.coords.altitude : undefined,
-            accuracy: pos.coords.accuracy !== null && Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : undefined,
+            altitude: pos.coords.altitude !== null && Number.isFinite(pos.coords.altitude) ? Math.round(pos.coords.altitude) : undefined,
+            accuracy: pos.coords.accuracy !== null && Number.isFinite(pos.coords.accuracy) ? Math.round(pos.coords.accuracy * 10) / 10 : undefined,
             speed: speed !== undefined ? Math.round(speed * 10) / 10 : undefined,
             heading: heading !== undefined ? Math.round(heading) : undefined,
             timestamp: pos.timestamp || Date.now(),
-            source: options.enableHighAccuracy ? "high_accuracy_gps" : "standard_gps",
+            source: options.enableHighAccuracy ? "high_accuracy_gnss" : "standard_gps",
           };
 
           resolve(fix);
@@ -189,22 +251,21 @@ class GpsEngine {
   }
 
   /**
-   * Continuous background GPS watcher with automatic error recovery
+   * Continuous background real-time GPS tracking with auto-recovery and graceful degradation
    */
   public startContinuousWatching(): void {
     if (this.isWatching) return;
     if (typeof navigator === "undefined" || !("geolocation" in navigator)) return;
 
     this.isWatching = true;
-    this.notifyStatus("acquiring", "Starting real-time continuous GPS tracking...");
+    this.setStatus("acquiring", "Live continuous positioning active");
 
-    const startWatcher = (useHighAcc: boolean) => {
+    const launchWatcher = (highAccuracy: boolean) => {
       if (this.watchId !== null) {
         navigator.geolocation.clearWatch(this.watchId);
         this.watchId = null;
       }
 
-      this.isHighAccuracy = useHighAcc;
       this.watchId = navigator.geolocation.watchPosition(
         (pos) => {
           if (!pos || !pos.coords) return;
@@ -212,58 +273,70 @@ class GpsEngine {
           const lng = Number(pos.coords.longitude);
           if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
 
-          let speed: number | undefined = undefined;
-          if (pos.coords.speed !== null && Number.isFinite(pos.coords.speed)) {
-            speed = Math.max(0, pos.coords.speed * 3.6);
-          } else if (this.lastFix) {
-            const timeDeltaSec = (pos.timestamp - this.lastFix.timestamp) / 1000;
-            if (timeDeltaSec > 1 && timeDeltaSec < 60) {
-              const distKm = this.calculateDistanceKm(this.lastFix.lat, this.lastFix.lng, lat, lng);
-              speed = Math.min(120, (distKm / timeDeltaSec) * 3600);
-            }
-          }
+          let speed = pos.coords.speed !== null && Number.isFinite(pos.coords.speed) ? pos.coords.speed * 3.6 : undefined;
+          let heading = pos.coords.heading !== null && Number.isFinite(pos.coords.heading) ? pos.coords.heading : undefined;
 
-          let heading: number | undefined = undefined;
-          if (pos.coords.heading !== null && Number.isFinite(pos.coords.heading)) {
-            heading = pos.coords.heading;
-          } else if (this.lastFix && speed && speed > 1.5) {
-            heading = this.calculateBearing(this.lastFix.lat, this.lastFix.lng, lat, lng);
+          if (this.lastFix) {
+            const timeDeltaSec = (pos.timestamp - this.lastFix.timestamp) / 1000;
+            if (timeDeltaSec > 1 && timeDeltaSec < 45) {
+              const distKm = this.calculateDistanceKm(this.lastFix.lat, this.lastFix.lng, lat, lng);
+              if (speed === undefined) {
+                speed = Math.min(130, (distKm / timeDeltaSec) * 3600);
+              }
+              if (heading === undefined && (speed || 0) > 1.5) {
+                heading = this.calculateBearing(this.lastFix.lat, this.lastFix.lng, lat, lng);
+              }
+            }
           }
 
           const fix: GpsTelemetryFix = {
             lat,
             lng,
-            altitude: pos.coords.altitude !== null && Number.isFinite(pos.coords.altitude) ? pos.coords.altitude : undefined,
-            accuracy: pos.coords.accuracy !== null && Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : undefined,
+            altitude: pos.coords.altitude !== null && Number.isFinite(pos.coords.altitude) ? Math.round(pos.coords.altitude) : undefined,
+            accuracy: pos.coords.accuracy !== null && Number.isFinite(pos.coords.accuracy) ? Math.round(pos.coords.accuracy * 10) / 10 : undefined,
             speed: speed !== undefined ? Math.round(speed * 10) / 10 : undefined,
             heading: heading !== undefined ? Math.round(heading) : undefined,
             timestamp: pos.timestamp || Date.now(),
-            source: useHighAcc ? "high_accuracy_gps" : "standard_gps",
+            source: highAccuracy ? "high_accuracy_gnss" : "standard_gps",
+            statusText: highAccuracy ? "High-Accuracy GNSS Lock" : "Cellular/WiFi Position",
           };
 
-          this.notifyStatus("active", "Live GPS Telemetry Active");
-          this.notifyFix(fix);
+          this.setStatus(
+            highAccuracy ? "high_accuracy_locked" : "standard_locked",
+            `Active telemetry (±${fix.accuracy || 10}m)`
+          );
+          this.emitFix(fix);
         },
         (err) => {
-          console.warn(`[GPS Watcher] error (highAcc=${useHighAcc}):`, err.message);
           if (err.code === 1) {
-            this.notifyStatus("denied", "Location permission was denied.");
-          } else if (useHighAcc) {
-            // Gracefully downgrade to standard accuracy watcher
-            setTimeout(() => startWatcher(false), 2000);
+            this.setStatus("permission_denied", "Location permission denied in device settings.");
+            this.stopContinuousWatching();
+            this.fetchNetworkIpLocation();
+          } else if (highAccuracy) {
+            // High accuracy failed or timed out (e.g. indoors); gracefully degrade to standard accuracy
+            this.setStatus("standard_locked", "Satellite signal weak. Switching to cellular/WiFi positioning.");
+            launchWatcher(false);
+
+            // Periodically attempt to re-upgrade to high-accuracy
+            if (!this.retryUpgradeTimer) {
+              this.retryUpgradeTimer = setTimeout(() => {
+                this.retryUpgradeTimer = null;
+                if (this.isWatching) launchWatcher(true);
+              }, 30000);
+            }
           } else {
-            this.notifyStatus("unavailable", "Live GPS signal weak.");
+            this.setStatus("unavailable", "GPS telemetry signal lost. Retrying...");
           }
         },
         {
-          enableHighAccuracy: useHighAcc,
-          maximumAge: useHighAcc ? 1500 : 10000,
-          timeout: useHighAcc ? 10000 : 20000,
+          enableHighAccuracy: highAccuracy,
+          maximumAge: highAccuracy ? 1000 : 8000,
+          timeout: highAccuracy ? 12000 : 20000,
         }
       );
     };
 
-    startWatcher(true);
+    launchWatcher(true);
   }
 
   public stopContinuousWatching(): void {
@@ -271,39 +344,70 @@ class GpsEngine {
       navigator.geolocation.clearWatch(this.watchId);
       this.watchId = null;
     }
+    if (this.retryUpgradeTimer) {
+      clearTimeout(this.retryUpgradeTimer);
+      this.retryUpgradeTimer = null;
+    }
     this.isWatching = false;
   }
 
   /**
-   * IP Geolocation fallback when GPS is not allowed or unavailable
+   * Resilient IP Geolocation fallback:
+   * First tries local server proxy /api/geo/ip-lookup (no CORS, works everywhere)
+   * Fallback to direct public ipwho.is
    */
-  private async fallbackIpLocation(): Promise<GpsTelemetryFix | null> {
+  private async fetchNetworkIpLocation(): Promise<GpsTelemetryFix | null> {
     try {
-      this.notifyStatus("fallback", "Retrieving network location approximation...");
-      const res = await fetch("https://ipwho.is/", { cache: "no-store" });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && Number.isFinite(data.latitude) && Number.isFinite(data.longitude)) {
+      this.setStatus("network_ip", "Resolving network location...");
+
+      // Attempt 1: Server proxy
+      try {
+        const serverRes = await fetch("/api/geo/ip-lookup", { cache: "no-store" });
+        if (serverRes.ok) {
+          const sData = await serverRes.json();
+          if (sData.success && Number.isFinite(sData.latitude) && Number.isFinite(sData.longitude)) {
+            const fix: GpsTelemetryFix = {
+              lat: sData.latitude,
+              lng: sData.longitude,
+              accuracy: 3500,
+              timestamp: Date.now(),
+              source: "ip_network",
+              statusText: `Approximate: ${sData.city || "Network Region"}`,
+            };
+            this.setStatus("network_ip", `Network location: ${sData.city || "Approximate"}`);
+            this.emitFix(fix);
+            return fix;
+          }
+        }
+      } catch (_) {}
+
+      // Attempt 2: Direct public provider
+      const pubRes = await fetch("https://ipwho.is/", { cache: "no-store" });
+      if (pubRes.ok) {
+        const pData = await pubRes.json();
+        if (pData.success && Number.isFinite(pData.latitude) && Number.isFinite(pData.longitude)) {
           const fix: GpsTelemetryFix = {
-            lat: data.latitude,
-            lng: data.longitude,
-            accuracy: 5000,
+            lat: pData.latitude,
+            lng: pData.longitude,
+            accuracy: 4500,
             timestamp: Date.now(),
-            source: "ip_fallback",
+            source: "ip_network",
+            statusText: `Approximate: ${pData.city || pData.region || "Network"}`,
           };
-          this.notifyFix(fix);
-          this.notifyStatus("fallback", `Approximate Network Location: ${data.city || data.region || "Detected"}`);
+          this.setStatus("network_ip", `Network location: ${pData.city || "Approximate"}`);
+          this.emitFix(fix);
           return fix;
         }
       }
     } catch (e) {
-      console.warn("[GPS] IP fallback failed:", e);
+      console.warn("[GPS] Network location lookup failed:", e);
     }
     return null;
   }
 
+  // WGS-84 Great-Circle Haversine distance in kilometers
   private calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
-    const R = 6371; // Earth radius in km
+    const R = 6371;
     const dLat = ((lat2 - lat1) * Math.PI) / 180;
     const dLon = ((lon2 - lon1) * Math.PI) / 180;
     const a =
@@ -312,20 +416,17 @@ class GpsEngine {
         Math.cos((lat2 * Math.PI) / 180) *
         Math.sin(dLon / 2) *
         Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
+  // Initial azimuth bearing from point A to point B in degrees (0-360)
   private calculateBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {
     const φ1 = (lat1 * Math.PI) / 180;
     const φ2 = (lat2 * Math.PI) / 180;
     const Δλ = ((lon2 - lon1) * Math.PI) / 180;
     const y = Math.sin(Δλ) * Math.cos(φ2);
-    const x =
-      Math.cos(φ1) * Math.sin(φ2) -
-      Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
-    const θ = Math.atan2(y, x);
-    return ((θ * 180) / Math.PI + 360) % 360;
+    const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+    return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
   }
 }
 

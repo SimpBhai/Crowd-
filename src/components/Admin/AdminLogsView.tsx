@@ -224,6 +224,7 @@ export const AdminLogsView: React.FC<AdminLogsViewProps> = ({
   const [banModalTarget, setBanModalTarget] = useState<UserRecord | null>(null);
   const [customBanReason, setCustomBanReason] = useState(VIOLATION_REASONS[0]);
   const [banLoading, setBanLoading] = useState(false);
+  const [actionFeedback, setActionFeedback] = useState<{ message: string; isError?: boolean } | null>(null);
 
   const isSuperAdmin = currentUser?.role === "superadmin";
   const isAdminOrSuperAdmin = currentUser?.role === "admin" || currentUser?.role === "superadmin";
@@ -267,7 +268,7 @@ export const AdminLogsView: React.FC<AdminLogsViewProps> = ({
     const lng = parseFloat(gmLng);
     const radius = parseFloat(gmRadius) || 120;
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-      alert("Please enter valid numeric latitude and longitude coordinates.");
+      setActionFeedback({ message: "Please enter valid numeric latitude and longitude coordinates.", isError: true });
       return;
     }
     await onSetGlobalMarker({
@@ -279,18 +280,19 @@ export const AdminLogsView: React.FC<AdminLogsViewProps> = ({
       targetTime: gmTargetTime.trim() || undefined,
     });
     setIsGlobalMarkerModalOpen(false);
+    setActionFeedback({ message: `Global Assembly Point "${gmTitle.trim() || "Assembly Point"}" established successfully.` });
   };
 
   const handleSaveUserAssignment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!targetUserId) {
-      alert("Please select a target user to assign.");
+      setActionFeedback({ message: "Please select a target user to assign.", isError: true });
       return;
     }
     const lat = parseFloat(assignLat);
     const lng = parseFloat(assignLng);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-      alert("Please enter valid numeric coordinates for this waypoint.");
+      setActionFeedback({ message: "Please enter valid numeric coordinates for this waypoint.", isError: true });
       return;
     }
     await onAssignUserMarker(targetUserId, {
@@ -302,6 +304,7 @@ export const AdminLogsView: React.FC<AdminLogsViewProps> = ({
     setIsAssignModalOpen(false);
     setAssignTitle("");
     setAssignInstructions("");
+    setActionFeedback({ message: "Tactical post assigned successfully." });
   };
 
   const handleCreateUserSubmit = async (e: React.FormEvent) => {
@@ -369,7 +372,7 @@ export const AdminLogsView: React.FC<AdminLogsViewProps> = ({
   const handleSaveCreateGroup = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!groupName.trim()) {
-      alert("Group name is required.");
+      setActionFeedback({ message: "Group name is required.", isError: true });
       return;
     }
     const rLat = parseFloat(groupRallyLat);
@@ -394,6 +397,7 @@ export const AdminLogsView: React.FC<AdminLogsViewProps> = ({
     setGroupDesc("");
     setGroupLeaderId("");
     setGroupRallyLabel("");
+    setActionFeedback({ message: `Squad "${groupName.trim()}" created successfully.` });
   };
 
   const handleOpenManageMembers = (group: ProtestGroup) => {
@@ -412,6 +416,7 @@ export const AdminLogsView: React.FC<AdminLogsViewProps> = ({
     if (!managingGroup) return;
     await onUpdateGroupMembers(managingGroup.id, selectedMemberIds);
     setManagingGroup(null);
+    setActionFeedback({ message: `Squad membership for "${managingGroup.name}" updated.` });
   };
 
   const handleConfirmBan = async () => {
@@ -420,8 +425,9 @@ export const AdminLogsView: React.FC<AdminLogsViewProps> = ({
     try {
       await onBanUser(banModalTarget.id, customBanReason);
       setBanModalTarget(null);
+      setActionFeedback({ message: `User ${banModalTarget.displayName} has been suspended.` });
     } catch (err: any) {
-      alert(err.message || "Failed to ban user");
+      setActionFeedback({ message: err.message || "Failed to ban user", isError: true });
     } finally {
       setBanLoading(false);
     }
@@ -466,6 +472,25 @@ export const AdminLogsView: React.FC<AdminLogsViewProps> = ({
   return (
     <div className="h-full overflow-y-auto bg-slate-50 p-3 sm:p-6 pb-12">
       <div className="max-w-6xl mx-auto space-y-5">
+        {/* Action Feedback Banner */}
+        {actionFeedback && (
+          <div
+            className={`p-3 rounded-xl border text-xs flex items-center justify-between shadow-sm animate-in fade-in ${
+              actionFeedback.isError
+                ? "bg-rose-50 border-rose-200 text-rose-800"
+                : "bg-emerald-50 border-emerald-200 text-emerald-800"
+            }`}
+          >
+            <span className="font-semibold">{actionFeedback.message}</span>
+            <button
+              onClick={() => setActionFeedback(null)}
+              className="text-slate-400 hover:text-slate-700 ml-2 font-bold cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Header Title & Navigation Bar */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-sm">
           <div>
@@ -1032,12 +1057,12 @@ export const AdminLogsView: React.FC<AdminLogsViewProps> = ({
                   </div>
                 </div>
 
-                {isSuperAdmin && (
+                {isAdminOrSuperAdmin && (
                   <div className="flex items-center gap-2 self-start sm:self-auto">
                     <button
                       id="set-global-marker-btn"
                       onClick={() => setIsGlobalMarkerModalOpen(true)}
-                      className="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-amber-200 transition"
+                      className="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-amber-200 transition cursor-pointer"
                     >
                       <Flag className="w-3.5 h-3.5" />
                       <span>{globalMarker ? "Update Assembly Point" : "Set Assembly Point"}</span>
@@ -1046,8 +1071,11 @@ export const AdminLogsView: React.FC<AdminLogsViewProps> = ({
                     {globalMarker && (
                       <button
                         id="clear-global-marker-btn"
-                        onClick={onClearGlobalMarker}
-                        className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-rose-50 hover:text-rose-600 text-slate-600 text-xs font-semibold flex items-center gap-1 transition"
+                        onClick={async () => {
+                          await onClearGlobalMarker();
+                          setActionFeedback({ message: "Global Assembly Point cleared." });
+                        }}
+                        className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-rose-50 hover:text-rose-600 text-slate-600 text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                         <span>Clear</span>

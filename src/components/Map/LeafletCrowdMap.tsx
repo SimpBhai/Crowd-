@@ -36,6 +36,7 @@ import {
 import { searchPlaces, reverseGeocode, GeocodeResult } from "../../utils/geocoding";
 import { fetchRoute, RouteResult, formatDistance, formatDuration } from "../../utils/routing";
 import { TacticalMapDispatcherModal } from "./TacticalMapDispatcherModal";
+import { gpsEngine } from "../../utils/gpsTracker";
 
 // Supported Tile Layer Presets
 export type MapLayerType = "satellite_hybrid" | "satellite_clean" | "streets" | "dark";
@@ -92,6 +93,7 @@ interface LeafletCrowdMapProps {
   isRealGpsActive?: boolean;
   onRefreshGps?: () => void;
   gpsAccuracy?: number | null;
+  gpsStatusText?: string;
   globalMarker?: GlobalMarker | null;
   assignments?: UserAssignment[];
   groups?: ProtestGroup[];
@@ -153,6 +155,7 @@ export const LeafletCrowdMap: React.FC<LeafletCrowdMapProps> = ({
   isRealGpsActive = false,
   onRefreshGps,
   gpsAccuracy = null,
+  gpsStatusText = "",
   globalMarker = null,
   assignments = [],
   groups = [],
@@ -219,6 +222,7 @@ export const LeafletCrowdMap: React.FC<LeafletCrowdMapProps> = ({
   const [selectedInspectionPoint, setSelectedInspectionPoint] = useState<InspectionPoint | null>(null);
 
   // Modal States
+  const [isAcquiringGps, setIsAcquiringGps] = useState(false);
   const [isGlobalMarkerDetailsOpen, setIsGlobalMarkerDetailsOpen] = useState(false);
   const [isQuickSetGlobalModalOpen, setIsQuickSetGlobalModalOpen] = useState(false);
   const [isQuickAssignModalOpen, setIsQuickAssignModalOpen] = useState(false);
@@ -1270,37 +1274,36 @@ export const LeafletCrowdMap: React.FC<LeafletCrowdMapProps> = ({
   };
 
   // Center on My Location with real direct GPS query and high accuracy
-  const handleCenterOnMyLocation = () => {
+  const handleCenterOnMyLocation = async () => {
     const map = mapInstanceRef.current;
     if (!map) return;
 
-    if (onRefreshGps) onRefreshGps();
+    setIsAcquiringGps(true);
 
-    const myLat = Number(currentUser?.location?.lat);
-    const myLng = Number(currentUser?.location?.lng);
+    // 1. Instantly center on last known or current user coordinates
+    const cachedFix = gpsEngine.getLastFix();
+    const immediateLat = Number(cachedFix?.lat ?? currentUser?.location?.lat);
+    const immediateLng = Number(cachedFix?.lng ?? currentUser?.location?.lng);
 
-    if (Number.isFinite(myLat) && Number.isFinite(myLng)) {
-      map.flyTo([myLat, myLng], 18, { duration: 1.0 });
+    if (Number.isFinite(immediateLat) && Number.isFinite(immediateLng)) {
+      map.flyTo([immediateLat, immediateLng], 18, { duration: 0.8 });
     }
 
-    if (typeof navigator !== "undefined" && "geolocation" in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          if (!pos || !pos.coords) return;
-          const lat = Number(pos.coords.latitude);
-          const lng = Number(pos.coords.longitude);
-          if (Number.isFinite(lat) && Number.isFinite(lng)) {
-            if (onUpdateCoordinates) {
-              onUpdateCoordinates(lat, lng);
-            }
-            map.flyTo([lat, lng], 18, { duration: 1.0 });
-          }
-        },
-        (err) => {
-          console.warn("Direct geolocation fix error:", err.message);
-        },
-        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
-      );
+    if (onRefreshGps) onRefreshGps();
+
+    // 2. Perform precision multi-tier hardware GPS lock
+    try {
+      const freshFix = await gpsEngine.requestDirectFix();
+      if (freshFix && Number.isFinite(freshFix.lat) && Number.isFinite(freshFix.lng)) {
+        if (onUpdateCoordinates) {
+          onUpdateCoordinates(freshFix.lat, freshFix.lng);
+        }
+        map.flyTo([freshFix.lat, freshFix.lng], 18, { duration: 1.0 });
+      }
+    } catch (err: any) {
+      console.warn("Direct positioning fix error:", err?.message);
+    } finally {
+      setIsAcquiringGps(false);
     }
   };
 
@@ -1382,13 +1385,17 @@ export const LeafletCrowdMap: React.FC<LeafletCrowdMapProps> = ({
 
   const handleSubmitQuickGlobalMarker = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!onSetGlobalMarker || !clickedLocation) return;
+    if (!onSetGlobalMarker) return;
+
+    const center = mapInstanceRef.current?.getCenter();
+    const lat = clickedLocation ? Number(clickedLocation.lat) : (center ? center.lat : (Number(currentUser?.location?.lat) || 25.5645));
+    const lng = clickedLocation ? Number(clickedLocation.lng) : (center ? center.lng : (Number(currentUser?.location?.lng) || 84.8560));
 
     await onSetGlobalMarker({
       title: quickGmTitle.trim() || "Central Assembly Point",
       description: quickGmDesc.trim(),
-      lat: clickedLocation.lat,
-      lng: clickedLocation.lng,
+      lat,
+      lng,
       radius: 150,
       targetTime: quickGmTime.trim() || undefined,
     });
@@ -1591,19 +1598,40 @@ export const LeafletCrowdMap: React.FC<LeafletCrowdMapProps> = ({
         {/* Quick Suggestion Pills */}
         <div className="flex items-center gap-1.5 mt-2 overflow-x-auto pb-1 no-scrollbar">
           {globalMarker && (
-            <button
-              onClick={handleFlyToGlobalMarker}
-              className="whitespace-nowrap px-3 py-1.5 rounded-full bg-amber-500 text-white text-xs font-extrabold shadow-md hover:bg-amber-600 transition flex items-center gap-1.5 shrink-0"
-            >
-              <span>🚩 Assembly Point</span>
-              <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={handleFlyToGlobalMarker}
+                className="whitespace-nowrap px-3 py-1.5 rounded-full bg-amber-500 text-white text-xs font-extrabold shadow-md hover:bg-amber-600 transition flex items-center gap-1.5 shrink-0 cursor-pointer"
+              >
+                <span>🚩 {globalMarker.title}</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
+              </button>
+              {isAdminOrSuperAdmin && onClearGlobalMarker && (
+                <button
+                  onClick={async () => {
+                    await onClearGlobalMarker();
+                  }}
+                  title="Remove Current Assembly Point"
+                  className="p-1.5 rounded-full bg-white/95 text-rose-600 hover:bg-rose-50 border border-rose-200 shadow-md transition cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           )}
 
-          {isSuperAdmin && !globalMarker && (
+          {isAdminOrSuperAdmin && !globalMarker && (
             <button
-              onClick={() => setIsQuickSetGlobalModalOpen(true)}
-              className="whitespace-nowrap px-3 py-1.5 rounded-full bg-amber-600 text-white text-xs font-extrabold shadow-md hover:bg-amber-700 transition flex items-center gap-1.5 shrink-0"
+              onClick={() => {
+                if (!clickedLocation) {
+                  const center = mapInstanceRef.current?.getCenter();
+                  const lat = center ? center.lat : (Number(currentUser?.location?.lat) || 25.5645);
+                  const lng = center ? center.lng : (Number(currentUser?.location?.lng) || 84.8560);
+                  setClickedLocation({ lat, lng, address: "Selected Central Coordinate" });
+                }
+                setIsQuickSetGlobalModalOpen(true);
+              }}
+              className="whitespace-nowrap px-3 py-1.5 rounded-full bg-amber-600 text-white text-xs font-extrabold shadow-md hover:bg-amber-700 transition flex items-center gap-1.5 shrink-0 cursor-pointer"
             >
               <Flag className="w-3.5 h-3.5" />
               <span>Set Assembly Point</span>
@@ -2128,13 +2156,13 @@ export const LeafletCrowdMap: React.FC<LeafletCrowdMapProps> = ({
               <span>Route to Assembly Point</span>
             </button>
 
-            {isSuperAdmin && onClearGlobalMarker && (
+            {isAdminOrSuperAdmin && onClearGlobalMarker && (
               <button
-                onClick={() => {
-                  onClearGlobalMarker();
+                onClick={async () => {
+                  await onClearGlobalMarker();
                   setIsGlobalMarkerDetailsOpen(false);
                 }}
-                className="col-span-2 py-1.5 px-3 rounded-xl bg-slate-100 hover:bg-rose-50 hover:text-rose-600 text-slate-600 text-xs font-semibold flex items-center justify-center gap-1 transition"
+                className="col-span-2 py-1.5 px-3 rounded-xl bg-slate-100 hover:bg-rose-50 hover:text-rose-600 text-slate-600 text-xs font-semibold flex items-center justify-center gap-1 transition cursor-pointer"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Remove Global Assembly Point</span>
@@ -2144,13 +2172,47 @@ export const LeafletCrowdMap: React.FC<LeafletCrowdMapProps> = ({
         </div>
       )}
 
-      {/* 9. Situation Banner */}
+      {/* 9. Precision GPS Telemetry HUD */}
+      <div className="absolute bottom-3 left-3 sm:left-4 z-20 pointer-events-auto">
+        <div className="bg-slate-900/90 backdrop-blur-md text-slate-200 px-3 py-1.5 rounded-xl border border-white/10 shadow-lg text-[11px] font-mono flex items-center gap-2">
+          <span
+            className={`w-2 h-2 rounded-full shrink-0 ${
+              isRealGpsActive
+                ? (gpsAccuracy && gpsAccuracy < 10 ? "bg-emerald-400 animate-pulse" : "bg-cyan-400")
+                : "bg-amber-400"
+            }`}
+          />
+          <span className="font-semibold text-white">
+            {isAcquiringGps
+              ? "Locking GNSS..."
+              : isRealGpsActive
+              ? `GPS ±${Math.round(gpsAccuracy || 5)}m`
+              : "Network Pos"}
+          </span>
+          {currentUser?.location?.speed !== undefined && currentUser.location.speed > 0.5 && (
+            <>
+              <span className="text-white/30">·</span>
+              <span>{Math.round(currentUser.location.speed)} km/h</span>
+            </>
+          )}
+          <button
+            onClick={handleCenterOnMyLocation}
+            disabled={isAcquiringGps}
+            title="Force GNSS Satellite Re-lock & Center"
+            className="text-[10px] uppercase font-bold text-blue-400 hover:text-blue-300 ml-1 transition cursor-pointer"
+          >
+            {isAcquiringGps ? "..." : "Sync"}
+          </button>
+        </div>
+      </div>
+
+      {/* 10. Situation Banner */}
       {isSituationBannerOpen &&
         !selectedUser &&
         !clickedLocation &&
         !isRouteDrawerOpen &&
         !isGlobalMarkerDetailsOpen && (
-          <div className="absolute bottom-2 sm:bottom-4 left-2 right-2 sm:left-6 sm:max-w-md z-30 bg-white/95 backdrop-blur-md rounded-2xl shadow-xl border border-slate-200 p-3 sm:p-3.5 animate-in slide-in-from-bottom duration-200">
+          <div className="absolute bottom-12 sm:bottom-4 left-2 right-2 sm:left-auto sm:right-4 sm:max-w-md z-20 bg-white/95 backdrop-blur-md rounded-2xl shadow-xl border border-slate-200 p-3 sm:p-3.5 animate-in slide-in-from-bottom duration-200">
             <div className="flex items-start justify-between gap-2">
               <div className="flex items-start gap-2.5">
                 <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center shrink-0 mt-0.5">
@@ -2163,7 +2225,7 @@ export const LeafletCrowdMap: React.FC<LeafletCrowdMapProps> = ({
                   <p className="text-[11px] text-slate-500 mt-0.5 leading-normal">
                     {globalMarker
                       ? `Central assembly point active at ${globalMarker.title}. Tap beacon to view routes.`
-                      : "Admins can tap any point to set assembly beacons and assign posts to squad members."}
+                      : "Admins can tap any point or use top button to set assembly beacons."}
                   </p>
                 </div>
               </div>
@@ -2177,8 +2239,8 @@ export const LeafletCrowdMap: React.FC<LeafletCrowdMapProps> = ({
           </div>
         )}
 
-      {/* MODAL: QUICK SET GLOBAL ASSEMBLY POINT (SUPER ADMIN) */}
-      {isQuickSetGlobalModalOpen && clickedLocation && (
+      {/* MODAL: QUICK SET GLOBAL ASSEMBLY POINT */}
+      {isQuickSetGlobalModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs overflow-y-auto">
           <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 p-4 sm:p-5 max-h-[92dvh] overflow-y-auto animate-in zoom-in-95 my-auto">
             <div className="flex items-center gap-2.5 mb-3">
@@ -2190,12 +2252,20 @@ export const LeafletCrowdMap: React.FC<LeafletCrowdMapProps> = ({
                   Set Global Protest Assembly Point
                 </h3>
                 <p className="text-[11px] text-slate-500">
-                  Broadcast this map location as the central meeting point.
+                  Broadcast this map location as the central meeting point to all units.
                 </p>
               </div>
             </div>
 
             <form onSubmit={handleSubmitQuickGlobalMarker} className="space-y-3 text-xs">
+              <div className="p-2 rounded-xl bg-slate-50 border border-slate-200 font-mono text-[11px] text-slate-700 flex items-center justify-between">
+                <span>Coordinates:</span>
+                <span className="font-bold text-slate-900">
+                  {(clickedLocation?.lat ?? mapInstanceRef.current?.getCenter()?.lat ?? 25.5645).toFixed(5)},{" "}
+                  {(clickedLocation?.lng ?? mapInstanceRef.current?.getCenter()?.lng ?? 84.8560).toFixed(5)}
+                </span>
+              </div>
+
               <div>
                 <label className="block font-bold text-slate-700 mb-1">Assembly Title</label>
                 <input
@@ -2203,6 +2273,7 @@ export const LeafletCrowdMap: React.FC<LeafletCrowdMapProps> = ({
                   required
                   value={quickGmTitle}
                   onChange={(e) => setQuickGmTitle(e.target.value)}
+                  placeholder="e.g. Central Rally Square"
                   className="w-full px-3 py-1.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none"
                 />
               </div>
@@ -2224,6 +2295,7 @@ export const LeafletCrowdMap: React.FC<LeafletCrowdMapProps> = ({
                   rows={2}
                   value={quickGmDesc}
                   onChange={(e) => setQuickGmDesc(e.target.value)}
+                  placeholder="Arrival instructions, marshaling notes..."
                   className="w-full px-3 py-1.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none"
                 />
               </div>
@@ -2232,13 +2304,13 @@ export const LeafletCrowdMap: React.FC<LeafletCrowdMapProps> = ({
                 <button
                   type="button"
                   onClick={() => setIsQuickSetGlobalModalOpen(false)}
-                  className="px-3 py-1.5 rounded-xl text-slate-600 hover:bg-slate-100 font-semibold"
+                  className="px-3 py-1.5 rounded-xl text-slate-600 hover:bg-slate-100 font-semibold cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold shadow-md shadow-amber-200"
+                  className="px-4 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold shadow-md shadow-amber-200 cursor-pointer"
                 >
                   Broadcast Assembly
                 </button>

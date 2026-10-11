@@ -398,12 +398,17 @@ export const TacticalMapDispatcherModal: React.FC<TacticalMapDispatcherModalProp
                     <button
                       onClick={async () => {
                         setIsSubmitting(true);
-                        await onClearGlobalMarker();
-                        setIsSubmitting(false);
-                        onClose();
+                        try {
+                          await onClearGlobalMarker();
+                          onClose();
+                        } catch (e) {
+                          console.warn("Failed clearing assembly point:", e);
+                        } finally {
+                          setIsSubmitting(false);
+                        }
                       }}
                       disabled={isSubmitting}
-                      className="py-3 px-3 rounded-xl border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold transition flex items-center gap-1.5"
+                      className="py-3 px-3 rounded-xl border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                       title="Clear Assembly Point"
                     >
                       <Trash2 className="w-4 h-4" />
