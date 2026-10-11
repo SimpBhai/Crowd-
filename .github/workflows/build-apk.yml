@@ -35,7 +35,7 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Project Dependencies
-        run: npm ci
+        run: if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
       - name: Build Web Production Assets
         run: npm run build
