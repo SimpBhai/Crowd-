@@ -6,7 +6,7 @@ on:
       live_url:
         description: 'Your Live Railway or Hosted App URL (e.g. https://your-app.up.railway.app)'
         required: false
-        default: 'https://rha-volunteers.up.railway.app'
+        default: 'https://crowd-production-9b2a.up.railway.app'
   push:
     branches: [ main ]
 
@@ -19,10 +19,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Set up Node.js 22 (LTS)
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Set up Java JDK 17
         uses: actions/setup-java@v4
@@ -43,20 +43,19 @@ jobs:
 
       - name: Configure Live Server URL
         env:
-          LIVE_URL: ${{ github.event.inputs.live_url || 'https://rha-volunteers.up.railway.app' }}
+          LIVE_URL: ${{ github.event.inputs.live_url || 'https://crowd-production-9b2a.up.railway.app' }}
         run: |
           echo "Targeting live URL: $LIVE_URL"
           node -e "
             const fs = require('fs');
             const cfgPath = 'capacitor.config.json';
             const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-            if (process.env.LIVE_URL) {
-              cfg.server = cfg.server || {};
-              cfg.server.url = process.env.LIVE_URL;
-              cfg.server.cleartext = true;
-              fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
-              console.log('Updated capacitor.config.json with live server:', process.env.LIVE_URL);
-            }
+            const targetUrl = (process.env.LIVE_URL || 'https://crowd-production-9b2a.up.railway.app').trim().replace(/\/+$/, '');
+            cfg.server = cfg.server || {};
+            cfg.server.url = targetUrl;
+            cfg.server.cleartext = true;
+            fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+            console.log('Updated capacitor.config.json with live server:', targetUrl);
           "
           npx cap sync android
 

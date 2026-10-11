@@ -4,6 +4,8 @@
 	"webDir": "dist",
 	"bundledWebRuntime": false,
 	"server": {
+		"url": "https://crowd-production-9b2a.up.railway.app",
+		"cleartext": true,
 		"androidScheme": "https",
 		"allowNavigation": [
 			"*"
