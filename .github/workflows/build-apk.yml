@@ -40,94 +40,34 @@ jobs:
       - name: Build Web Production Assets
         run: npm run build
 
-      - name: Install Bubblewrap CLI
-        run: npm install -g @bubblewrap/cli
-
-      - name: Configure Headless Bubblewrap Environment
-        run: |
-          mkdir -p ~/.bubblewrap
-          cat <<EOF > ~/.bubblewrap/config.json
-          {
-            "jdkPath": "$JAVA_HOME",
-            "androidSdkPath": "$ANDROID_HOME"
-          }
-          EOF
-
-      - name: Generate Android Project & Build Signed APK
+      - name: Configure Live Server URL
         env:
-          INPUT_URL: ${{ github.event.inputs.live_url || 'https://rha-volunteers.up.railway.app' }}
-          BUBBLEWRAP_KEYSTORE_PASSWORD: 'rhavolunteers123'
-          BUBBLEWRAP_KEY_PASSWORD: 'rhavolunteers123'
+          LIVE_URL: ${{ github.event.inputs.live_url || 'https://rha-volunteers.up.railway.app' }}
         run: |
-          mkdir -p android-build
-          cd android-build
-
-          # Parse hostname and clean URL
-          CLEAN_URL=$(echo "$INPUT_URL" | sed -e 's|^[^/]*//||' -e 's|/.*$||')
-          if [ -z "$CLEAN_URL" ]; then
-            CLEAN_URL="rha-volunteers.up.railway.app"
-          fi
-          echo "Building APK pointing to host: $CLEAN_URL"
-
-          # 1. Generate local keystore non-interactively
-          keytool -genkey -v \
-            -keystore android.keystore \
-            -alias rhavolunteers \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -storepass "rhavolunteers123" \
-            -keypass "rhavolunteers123" \
-            -dname "CN=RHA-volunteers, OU=RobinHoodArmy, O=RHA, L=Global, S=Global, C=US"
-
-          # 2. Generate twa-manifest.json non-interactively
-          cat <<EOF > twa-manifest.json
-          {
-            "packageId": "org.rha.volunteers.tracker",
-            "host": "$CLEAN_URL",
-            "name": "RHA-volunteers",
-            "launcherName": "RHA-volunteers",
-            "themeColor": "#166534",
-            "navigationColor": "#166534",
-            "backgroundColor": "#166534",
-            "startUrl": "/",
-            "iconUrl": "https://$CLEAN_URL/icon-512.png",
-            "maskableIconUrl": "https://$CLEAN_URL/icon-maskable.png",
-            "appVersionName": "1.0.0",
-            "appVersionCode": 1,
-            "signingKey": {
-              "path": "./android.keystore",
-              "alias": "rhavolunteers"
-            },
-            "splashScreenFadeOutDuration": 300,
-            "enableNotifications": true,
-            "enableSiteSettingsShortcut": true,
-            "isChromeOSOnly": false,
-            "shortcuts": [],
-            "generatorApp": "bubblewrap-cli",
-            "webManifestUrl": "https://$CLEAN_URL/manifest.json",
-            "fallbackType": "customtabs",
-            "features": {
-              "locationDelegation": {
-                "enabled": true
-              }
-            },
-            "alphaDependencies": {
-              "enabled": false
+          echo "Targeting live URL: $LIVE_URL"
+          node -e "
+            const fs = require('fs');
+            const cfgPath = 'capacitor.config.json';
+            const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+            if (process.env.LIVE_URL) {
+              cfg.server = cfg.server || {};
+              cfg.server.url = process.env.LIVE_URL;
+              cfg.server.cleartext = true;
+              fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+              console.log('Updated capacitor.config.json with live server:', process.env.LIVE_URL);
             }
-          }
-          EOF
+          "
+          npx cap sync android
 
-          # 3. Build APK using bubblewrap
-          bubblewrap build --skipPwaValidation || true
+      - name: Build Android APK with Gradle
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
 
       - name: Upload Finished Android APK
         uses: actions/upload-artifact@v4
         with:
           name: RHA-volunteers-Android-APK
-          path: |
-            android-build/*.apk
-            android-build/app/build/outputs/apk/release/*.apk
-            android-build/app/build/outputs/apk/debug/*.apk
-            dist/
-          if-no-files-found: warn
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
