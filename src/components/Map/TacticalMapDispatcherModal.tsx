@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   MapPin,
   Flag,
@@ -111,6 +111,15 @@ export const TacticalMapDispatcherModal: React.FC<TacticalMapDispatcherModalProp
   const [assemblyDesc, setAssemblyDesc] = useState(globalMarker?.description || "All protest units and marchers converge at this central hub.");
   const [assemblyRadius, setAssemblyRadius] = useState(globalMarker?.radius || 150);
   const [assemblyTime, setAssemblyTime] = useState(globalMarker?.targetTime || "15:00 PM");
+
+  useEffect(() => {
+    if (globalMarker) {
+      setAssemblyTitle(globalMarker.title);
+      setAssemblyDesc(globalMarker.description || "All protest units and marchers converge at this central hub.");
+      setAssemblyRadius(globalMarker.radius || 150);
+      setAssemblyTime(globalMarker.targetTime || "15:00 PM");
+    }
+  }, [globalMarker]);
 
   // 2. Inspection Points State
   const [inspectionTitle, setInspectionTitle] = useState("North Checkpoint Alpha");

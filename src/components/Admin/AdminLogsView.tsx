@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   ShieldAlert,
   ShieldCheck,
@@ -196,6 +196,18 @@ export const AdminLogsView: React.FC<AdminLogsViewProps> = ({
   const [gmLng, setGmLng] = useState(globalMarker?.lng ? String(globalMarker.lng) : "84.8560");
   const [gmRadius, setGmRadius] = useState(globalMarker?.radius ? String(globalMarker.radius) : "150");
   const [gmTargetTime, setGmTargetTime] = useState(globalMarker?.targetTime || "15:30 PM");
+
+  // Keep modal inputs in sync whenever globalMarker updates from server/WS
+  useEffect(() => {
+    if (globalMarker) {
+      setGmTitle(globalMarker.title);
+      setGmDesc(globalMarker.description || "");
+      setGmLat(String(globalMarker.lat));
+      setGmLng(String(globalMarker.lng));
+      setGmRadius(String(globalMarker.radius || 150));
+      setGmTargetTime(globalMarker.targetTime || "15:30 PM");
+    }
+  }, [globalMarker]);
 
   // User Assignment Form Modal
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
@@ -1906,26 +1918,56 @@ export const AdminLogsView: React.FC<AdminLogsViewProps> = ({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-bold text-slate-700 mb-1">Latitude</label>
-                    <input
-                      type="text"
-                      required
-                      value={gmLat}
-                      onChange={(e) => setGmLat(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                    />
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block font-bold text-slate-700">Target Coordinates</label>
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (currentUser?.location) {
+                            setGmLat(currentUser.location.lat.toFixed(6));
+                            setGmLng(currentUser.location.lng.toFixed(6));
+                          }
+                        }}
+                        className="text-indigo-600 hover:text-indigo-800 font-bold underline cursor-pointer"
+                      >
+                        📍 Use My GPS
+                      </button>
+                      <span className="text-slate-300">|</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setGmLat("25.564500");
+                          setGmLng("84.856000");
+                        }}
+                        className="text-amber-700 hover:text-amber-900 font-bold underline cursor-pointer"
+                      >
+                        🏛️ Devi Asthan
+                      </button>
+                    </div>
                   </div>
-                  <div>
-                    <label className="block font-bold text-slate-700 mb-1">Longitude</label>
-                    <input
-                      type="text"
-                      required
-                      value={gmLng}
-                      onChange={(e) => setGmLng(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                    />
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <input
+                        type="text"
+                        required
+                        value={gmLat}
+                        onChange={(e) => setGmLat(e.target.value)}
+                        placeholder="Latitude"
+                        className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <input
+                        type="text"
+                        required
+                        value={gmLng}
+                        onChange={(e) => setGmLng(e.target.value)}
+                        placeholder="Longitude"
+                        className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -1940,20 +1982,37 @@ export const AdminLogsView: React.FC<AdminLogsViewProps> = ({
                   />
                 </div>
 
-                <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-100">
-                  <button
-                    type="button"
-                    onClick={() => setIsGlobalMarkerModalOpen(false)}
-                    className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 font-semibold"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold shadow-md shadow-amber-200"
-                  >
-                    Broadcast Assembly Point
-                  </button>
+                <div className="pt-3 flex items-center justify-between gap-2 border-t border-slate-100">
+                  {globalMarker ? (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await onClearGlobalMarker();
+                        setIsGlobalMarkerModalOpen(false);
+                        setActionFeedback({ message: "Global Assembly Point cleared." });
+                      }}
+                      className="px-3.5 py-2 rounded-xl border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Remove Assembly</span>
+                    </button>
+                  ) : <div />}
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsGlobalMarkerModalOpen(false)}
+                      className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 font-semibold cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold shadow-md shadow-amber-200 cursor-pointer"
+                    >
+                      Broadcast Assembly Point
+                    </button>
+                  </div>
                 </div>
               </form>
             </div>

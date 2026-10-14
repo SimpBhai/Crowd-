@@ -1846,6 +1846,21 @@ export const LeafletCrowdMap: React.FC<LeafletCrowdMapProps> = ({
               <span>Dispatch Options</span>
             </button>
 
+            {isAdminOrSuperAdmin && (
+              <button
+                onClick={() => {
+                  setQuickGmTitle(globalMarker?.title || "Central Assembly Point");
+                  setQuickGmDesc(globalMarker?.description || "All protest units and marchers converge here.");
+                  setQuickGmTime(globalMarker?.targetTime || "15:30 PM");
+                  setIsQuickSetGlobalModalOpen(true);
+                }}
+                className="col-span-2 py-2 px-3 rounded-xl bg-amber-500 hover:bg-amber-600 active:scale-98 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-md shadow-amber-200 transition cursor-pointer"
+              >
+                <Flag className="w-3.5 h-3.5" />
+                <span>{globalMarker ? "Move Assembly Point Here" : "Set Assembly Point Here"}</span>
+              </button>
+            )}
+
             {onUpdateCoordinates && (
               <button
                 onClick={() => {
@@ -2156,17 +2171,41 @@ export const LeafletCrowdMap: React.FC<LeafletCrowdMapProps> = ({
               <span>Route to Assembly Point</span>
             </button>
 
-            {isAdminOrSuperAdmin && onClearGlobalMarker && (
-              <button
-                onClick={async () => {
-                  await onClearGlobalMarker();
-                  setIsGlobalMarkerDetailsOpen(false);
-                }}
-                className="col-span-2 py-1.5 px-3 rounded-xl bg-slate-100 hover:bg-rose-50 hover:text-rose-600 text-slate-600 text-xs font-semibold flex items-center justify-center gap-1 transition cursor-pointer"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Remove Global Assembly Point</span>
-              </button>
+            {isAdminOrSuperAdmin && (
+              <div className="col-span-2 flex items-center gap-2 pt-1">
+                <button
+                  onClick={() => {
+                    setClickedLocation({
+                      lat: globalMarker.lat,
+                      lng: globalMarker.lng,
+                      address: globalMarker.title,
+                    });
+                    setQuickGmTitle(globalMarker.title);
+                    setQuickGmDesc(globalMarker.description || "");
+                    setQuickGmTime(globalMarker.targetTime || "");
+                    setIsGlobalMarkerDetailsOpen(false);
+                    setIsQuickSetGlobalModalOpen(true);
+                  }}
+                  className="flex-1 py-2 px-3 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                >
+                  <Flag className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Edit Assembly Details</span>
+                </button>
+
+                {onClearGlobalMarker && (
+                  <button
+                    onClick={async () => {
+                      await onClearGlobalMarker();
+                      setIsGlobalMarkerDetailsOpen(false);
+                    }}
+                    className="py-2 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 text-xs font-bold flex items-center justify-center gap-1 transition cursor-pointer"
+                    title="Remove Global Assembly Point"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Clear</span>
+                  </button>
+                )}
+              </div>
             )}
           </div>
         </div>

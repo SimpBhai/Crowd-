@@ -1954,20 +1954,23 @@ async function startServer() {
 
     ws.on("message", (raw) => {
       try {
-        // Simple rate limiting per socket (max 40 messages per 10s window)
-        const now = Date.now();
-        if (now > windowReset) {
-          messageCount = 0;
-          windowReset = now + 10000;
-        }
-        messageCount++;
-        if (messageCount > 40) return; // Drop spam frames
-
         const rawString = raw.toString();
         if (rawString.length > 65536) return; // Drop oversized frames
 
         const data = JSON.parse(rawString);
         if (!data || typeof data.type !== "string") return;
+
+        // Exempt real-time voice audio packets from standard text rate limiter
+        const isAudioPacket = data.type === "call:audio_data";
+        if (!isAudioPacket) {
+          const now = Date.now();
+          if (now > windowReset) {
+            messageCount = 0;
+            windowReset = now + 10000;
+          }
+          messageCount++;
+          if (messageCount > 100) return; // Drop spam control frames
+        }
 
         switch (data.type) {
           case "auth:identify": {

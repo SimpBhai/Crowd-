@@ -1068,7 +1068,15 @@ export default function App() {
     setIsCallPromptOpen(false);
 
     await audioCallManager.requestMicrophone();
-    audioCallManager.startOutgoingRingtone();
+
+    if (autoAnswer) {
+      // Bypassing consent (Tactical Intercom / Radio): NO ringtone, immediate radio chirp
+      audioCallManager.stopRingtone();
+      audioCallManager.playConnectChime();
+    } else {
+      // Normal call with consent: play ringing tone until recipient answers
+      audioCallManager.startOutgoingRingtone();
+    }
 
     if (pendingCallTarget.type === "user") {
       const targetUser = pendingCallTarget.user;
@@ -1080,11 +1088,27 @@ export default function App() {
         otherUserRole: targetUser.role,
         isIncoming: false,
         autoAnswer,
-        status: "calling",
+        status: autoAnswer ? "connected" : "calling",
         duration: 0,
         isMuted: false,
         isSpeakerOn: true,
       });
+
+      if (autoAnswer) {
+        // Start streaming voice immediately for intercom
+        audioCallManager.startAudioStreamBroadcast((chunk, sampleRate) => {
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(
+              JSON.stringify({
+                type: "call:audio_data",
+                targetUserId: targetUser.id,
+                audioChunk: chunk,
+                sampleRate,
+              })
+            );
+          }
+        });
+      }
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(
@@ -1108,12 +1132,29 @@ export default function App() {
         otherUserRole: "admin",
         isIncoming: false,
         autoAnswer,
-        status: "calling",
+        status: autoAnswer ? "connected" : "calling",
         duration: 0,
         isMuted: false,
         isSpeakerOn: true,
         participantCount: targetGroup.memberIds.length,
       });
+
+      if (autoAnswer) {
+        // Start streaming voice immediately to group
+        audioCallManager.startAudioStreamBroadcast((chunk, sampleRate) => {
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(
+              JSON.stringify({
+                type: "call:audio_data",
+                callType: "group",
+                groupId: targetGroup.id,
+                audioChunk: chunk,
+                sampleRate,
+              })
+            );
+          }
+        });
+      }
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(
@@ -1352,7 +1393,8 @@ export default function App() {
 
     try {
       const token = authToken || localStorage.getItem("crowd_auth_token") || "";
-      const res = await apiFetch("/api/global-marker", {
+      const effectiveUserId = currentUser?.id || "usr-superadmin";
+      const res = await apiFetch(`/api/global-marker?userId=${encodeURIComponent(effectiveUserId)}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1360,8 +1402,8 @@ export default function App() {
         },
         body: JSON.stringify({
           ...data,
-          adminUserId: currentUser?.id,
-          userId: currentUser?.id,
+          adminUserId: effectiveUserId,
+          userId: effectiveUserId,
           updatedBy: currentUser?.displayName || "Command Lead",
         }),
       });
@@ -1381,15 +1423,16 @@ export default function App() {
 
     try {
       const token = authToken || localStorage.getItem("crowd_auth_token") || "";
-      const res = await apiFetch("/api/global-marker", {
+      const effectiveUserId = currentUser?.id || "usr-superadmin";
+      const res = await apiFetch(`/api/global-marker?userId=${encodeURIComponent(effectiveUserId)}`, {
         method: "DELETE",
         headers: {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          adminUserId: currentUser?.id,
-          userId: currentUser?.id,
+          adminUserId: effectiveUserId,
+          userId: effectiveUserId,
         }),
       });
       if (!res.ok) {
@@ -1699,6 +1742,7 @@ export default function App() {
           setFilters((f) => ({ ...f, hasSosOnly: true }));
           setCurrentTab("home");
         }}
+        onOpenLogin={() => setIsLoginModalOpen(true)}
       />
 
       {/* Floating Tactical Notice Notification Banner */}

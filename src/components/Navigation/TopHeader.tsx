@@ -10,6 +10,7 @@ interface TopHeaderProps {
   movingUsersCount: number;
   onTriggerSos: () => void;
   onOpenSosDetails: () => void;
+  onOpenLogin?: () => void;
 }
 
 export const TopHeader: React.FC<TopHeaderProps> = ({
@@ -20,6 +21,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   movingUsersCount,
   onTriggerSos,
   onOpenSosDetails,
+  onOpenLogin,
 }) => {
   const [showSosConfirm, setShowSosConfirm] = useState(false);
 
@@ -135,26 +137,39 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             </div>
           )}
 
-          {/* Current User Role Pill */}
-          {currentUser && (
-            <div className="hidden sm:flex items-center gap-3 pl-3 border-l border-slate-200">
-              <div className="text-right">
-                <p className="text-sm font-bold leading-none text-slate-900">
+          {/* Current User Role Pill & Switcher */}
+          {currentUser ? (
+            <button
+              onClick={onOpenLogin}
+              title="Click to switch account role or sign in"
+              className="flex items-center gap-2 sm:gap-3 pl-2 sm:pl-3 border-l border-slate-200 hover:opacity-85 transition cursor-pointer text-left"
+            >
+              <div className="hidden sm:block text-right">
+                <p className="text-sm font-bold leading-none text-slate-900 truncate max-w-[120px]">
                   {currentUser.displayName}
                 </p>
-                <p className="text-[10px] text-emerald-500 font-bold uppercase tracking-wider mt-0.5">
-                  {currentUser.role.replace("_", " ")} ONLINE
+                <p className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider mt-0.5">
+                  {currentUser.role.replace("_", " ")}
                 </p>
               </div>
-              <div className="w-10 h-10 rounded-full bg-slate-200 border-2 border-indigo-600 p-0.5 shrink-0 shadow-sm flex items-center justify-center">
+              <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-slate-200 border-2 border-indigo-600 p-0.5 shrink-0 shadow-sm flex items-center justify-center">
                 <div
-                  className="w-full h-full rounded-full flex items-center justify-center text-white text-sm font-black shadow-inner"
+                  className="w-full h-full rounded-full flex items-center justify-center text-white text-xs sm:text-sm font-black shadow-inner"
                   style={{ backgroundColor: currentUser.avatarColor || "#4f46e5" }}
                 >
                   {currentUser.displayName.charAt(0)}
                 </div>
               </div>
-            </div>
+            </button>
+          ) : (
+            onOpenLogin && (
+              <button
+                onClick={onOpenLogin}
+                className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-sm transition"
+              >
+                Sign In
+              </button>
+            )
           )}
         </div>
       </div>
