@@ -617,8 +617,9 @@ async function startServer() {
   // 1. Disable server fingerprinting
   app.disable("x-powered-by");
 
-  // 2. Strict JSON body parser with payload limit to prevent buffer exhaustion DoS
+  // 2. Strict JSON and text body parser with payload limit to support navigator.sendBeacon & keepalive HTTP pings
   app.use(express.json({ limit: "512kb" }));
+  app.use(express.text({ type: ["text/*", "application/json"], limit: "512kb" }));
   app.use(express.urlencoded({ extended: false, limit: "512kb" }));
 
   // 3. Security Headers Middleware (Zero Extra Dependency)
@@ -821,6 +822,27 @@ async function startServer() {
       token,
       user: authenticatedUser,
     });
+  });
+
+  // Auth: Explicit Logout
+  app.post("/api/auth/logout", (req, res) => {
+    let user = resolveUserFromRequest(req);
+    const targetUserId = sanitizeText(req.body?.userId || req.query?.userId, 50);
+    if (!user && targetUserId) {
+      user = usersMap.get(targetUserId) || null;
+    }
+    if (user) {
+      user.isOnline = false;
+      usersMap.set(user.id, user);
+      broadcastWS({ type: "user:status_change", userId: user.id, isOnline: false });
+      addAuditLog("info", "USER_LOGOUT", `${user.displayName} explicitly logged out.`, user.id, user.username);
+    }
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const token = authHeader.substring(7).trim();
+      sessionsMap.delete(token);
+    }
+    res.json({ success: true, message: "Logged out successfully" });
   });
 
   // Auth: Register (Restricted Strictly to Super Admin Command)
@@ -1474,6 +1496,65 @@ async function startServer() {
       isFallback: true,
     });
   });
+
+  // Background Continuous GPS Processing Endpoint (Used by Background Watcher, Beacon & Keep-Alive)
+  const handleBackgroundGpsUpdate = (req: Request, res: Response) => {
+    try {
+      let rawData = req.body;
+      if (typeof rawData === "string") {
+        try {
+          rawData = JSON.parse(rawData);
+        } catch (_) {}
+      }
+
+      let user = resolveUserFromRequest(req);
+      const targetUserId = sanitizeText(rawData?.userId, 50) || (req.query?.userId as string | undefined);
+      if (!user && targetUserId) {
+        user = usersMap.get(targetUserId) || null;
+      }
+
+      if (!user) {
+        return res.status(401).json({ error: "User identity missing for background GPS ping" });
+      }
+
+      if (user.isBanned) {
+        return res.status(403).json({ error: "Account suspended" });
+      }
+
+      const updateLat = validateCoordinate(rawData?.lat, -90, 90, user.location.lat);
+      const updateLng = validateCoordinate(rawData?.lng, -180, 180, user.location.lng);
+
+      user.location = {
+        lat: updateLat,
+        lng: updateLng,
+        altitude: typeof rawData?.altitude === "number" && Number.isFinite(rawData.altitude) ? rawData.altitude : user.location.altitude,
+        accuracy: validateAccuracy(rawData?.accuracy),
+        heading: validateHeading(rawData?.heading),
+        speed: validateSpeed(rawData?.speed),
+        lastUpdated: new Date().toISOString(),
+      };
+
+      if (rawData?.movementStatus && ["stationary", "walking", "running", "in_transit", "sos"].includes(rawData.movementStatus)) {
+        user.movementStatus = rawData.movementStatus;
+      }
+      user.isOnline = true;
+      usersMap.set(user.id, user);
+
+      // Broadcast location update across the mesh network
+      broadcastWS({
+        type: "user:location_update",
+        user,
+      });
+
+      res.json({ success: true, userLocation: user.location });
+    } catch (err) {
+      console.warn("Background GPS handler notice:", err);
+      res.status(500).json({ error: "Internal error processing location ping" });
+    }
+  };
+
+  app.post("/api/gps/update", handleBackgroundGpsUpdate);
+  app.post("/api/gps/beacon", handleBackgroundGpsUpdate);
 
   // ---------------- MULTIPLE INSPECTION & CHECKPOINTS ----------------
   app.get("/api/inspection-points", (_req, res) => {
@@ -2232,9 +2313,10 @@ async function startServer() {
         clientConnections.delete(authenticatedUserId);
         const user = usersMap.get(authenticatedUserId);
         if (user) {
-          user.isOnline = false;
+          // In field operations, volunteers frequently lock screen or background the app.
+          // Maintain active unit presence on the radar until explicit logout or ban.
+          user.isOnline = true;
           usersMap.set(authenticatedUserId, user);
-          broadcastWS({ type: "user:status_change", userId: user.id, isOnline: false });
         }
       }
     });

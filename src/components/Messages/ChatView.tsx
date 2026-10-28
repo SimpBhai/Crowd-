@@ -31,6 +31,7 @@ interface ChatViewProps {
   onViewLocationOnMap?: (lat: number, lng: number) => void;
   initialRecipientId?: string;
   onOpenLogin?: () => void;
+  onClearUnreadBadge?: () => void;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -44,6 +45,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onViewLocationOnMap,
   initialRecipientId = "all",
   onOpenLogin,
+  onClearUnreadBadge,
 }) => {
   const [selectedChannelId, setSelectedChannelId] = useState<string>(initialRecipientId || "all");
   const [mobileView, setMobileView] = useState<"channels" | "chat">("chat");
@@ -51,6 +53,30 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Per-channel last read timestamp tracking (persisted to localStorage)
+  const [readTimestamps, setReadTimestamps] = useState<Record<string, number>>(() => {
+    try {
+      const saved = localStorage.getItem("rha_chat_read_timestamps");
+      if (saved) return JSON.parse(saved);
+    } catch (_) {}
+    return { all: Date.now() };
+  });
+
+  // Mark currently active channel as read whenever viewing chat or when new messages arrive in active channel
+  useEffect(() => {
+    const now = Date.now();
+    setReadTimestamps((prev) => {
+      const updated = { ...prev, [selectedChannelId]: now };
+      try {
+        localStorage.setItem("rha_chat_read_timestamps", JSON.stringify(updated));
+      } catch (_) {}
+      return updated;
+    });
+    if (onClearUnreadBadge) {
+      onClearUnreadBadge();
+    }
+  }, [selectedChannelId, messages.length, onClearUnreadBadge]);
 
   // Sync state whenever initialRecipientId prop changes (e.g. user clicked Message on map)
   useEffect(() => {
@@ -214,25 +240,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
           }`}
         >
           <MessageSquare className="w-3.5 h-3.5 shrink-0" />
-          <span className="truncate max-w-[125px]">
+          <span className="truncate max-w-[140px]">
             {currentChannelTitle}
           </span>
-          {activeMessages.length > 0 && (
-            <span
-              className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                mobileView === "chat" ? "bg-indigo-700 text-white" : "bg-indigo-50 text-indigo-600"
-              }`}
-            >
-              {activeMessages.length}
-            </span>
-          )}
         </button>
 
         <button
           id="mobile-tab-channels"
           type="button"
           onClick={() => setMobileView("channels")}
-          className={`flex-1 py-1.5 px-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition ${
+          className={`flex-1 py-1.5 px-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition relative ${
             mobileView === "channels"
               ? "bg-indigo-600 text-white shadow-sm"
               : "bg-white text-slate-700 hover:bg-slate-50 border border-slate-200"
@@ -240,13 +257,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
         >
           <Users className="w-3.5 h-3.5 shrink-0" />
           <span className="truncate">Channels & Squads</span>
-          <span
-            className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-              mobileView === "channels" ? "bg-indigo-700 text-white" : "bg-slate-200 text-slate-700"
-            }`}
-          >
-            {standardChannels.length + filteredGroups.length + filteredDirectUsers.length}
-          </span>
         </button>
       </div>
 
@@ -308,7 +318,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
           {standardChannels.map((ch) => {
             const Icon = ch.icon;
             const isSelected = selectedChannelId === ch.id;
-            const channelMsgCount = messages.filter((m) => m.recipientId === ch.id).length;
+            const lastRead = readTimestamps[ch.id] || 0;
+            const unreadCount = isSelected
+              ? 0
+              : messages.filter(
+                  (m) =>
+                    m.recipientId === ch.id &&
+                    m.senderId !== currentUser?.id &&
+                    new Date(m.timestamp).getTime() > lastRead
+                ).length;
 
             return (
               <button
@@ -331,13 +349,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-xs truncate">{ch.name}</span>
-                    {channelMsgCount > 0 && (
-                      <span
-                        className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                          isSelected ? "bg-indigo-700 text-indigo-100" : "bg-slate-200 text-slate-600"
-                        }`}
-                      >
-                        {channelMsgCount}
+                    {unreadCount > 0 && (
+                      <span className="text-[10px] min-w-4 h-4 px-1 rounded-full font-bold bg-rose-600 text-white flex items-center justify-center shadow-xs">
+                        {unreadCount > 9 ? "9+" : unreadCount}
                       </span>
                     )}
                   </div>
@@ -365,7 +379,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
               {filteredGroups.map((g) => {
                 const isSelected = selectedChannelId === g.id;
-                const groupMsgCount = messages.filter((m) => m.recipientId === g.id).length;
+                const lastRead = readTimestamps[g.id] || 0;
+                const unreadCount = isSelected
+                  ? 0
+                  : messages.filter(
+                      (m) =>
+                        m.recipientId === g.id &&
+                        m.senderId !== currentUser?.id &&
+                        new Date(m.timestamp).getTime() > lastRead
+                    ).length;
 
                 return (
                   <button
@@ -387,13 +409,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
                         <span className="font-bold text-xs truncate">{g.name}</span>
-                        {groupMsgCount > 0 && (
-                          <span
-                            className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                              isSelected ? "bg-indigo-700 text-indigo-100" : "bg-slate-200 text-slate-600"
-                            }`}
-                          >
-                            {groupMsgCount}
+                        {unreadCount > 0 && (
+                          <span className="text-[10px] min-w-4 h-4 px-1 rounded-full font-bold bg-rose-600 text-white flex items-center justify-center shadow-xs">
+                            {unreadCount > 9 ? "9+" : unreadCount}
                           </span>
                         )}
                       </div>
@@ -426,11 +444,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
           ) : (
             filteredDirectUsers.map((u) => {
               const isSelected = selectedChannelId === u.id;
-              const directMsgCount = messages.filter(
-                (m) =>
-                  (m.senderId === currentUser?.id && m.recipientId === u.id) ||
-                  (m.senderId === u.id && m.recipientId === currentUser?.id)
-              ).length;
+              const lastRead = readTimestamps[u.id] || 0;
+              const unreadCount = isSelected
+                ? 0
+                : messages.filter(
+                    (m) =>
+                      m.senderId === u.id &&
+                      m.recipientId === currentUser?.id &&
+                      new Date(m.timestamp).getTime() > lastRead
+                  ).length;
 
               return (
                 <button
@@ -470,13 +492,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   </div>
 
                   <div className="flex items-center gap-1.5 shrink-0">
-                    {directMsgCount > 0 && (
-                      <span
-                        className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                          isSelected ? "bg-indigo-700 text-indigo-100" : "bg-slate-200 text-slate-600"
-                        }`}
-                      >
-                        {directMsgCount}
+                    {unreadCount > 0 && (
+                      <span className="text-[10px] min-w-4 h-4 px-1 rounded-full font-bold bg-rose-600 text-white flex items-center justify-center shadow-xs">
+                        {unreadCount > 9 ? "9+" : unreadCount}
                       </span>
                     )}
 

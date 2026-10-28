@@ -269,23 +269,20 @@ class AudioCallManager {
       if (ctx.state === "suspended") ctx.resume().catch(() => {});
 
       const binary = atob(base64Chunk);
-      const len = binary.length;
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-
-      const int16Array = new Int16Array(bytes.buffer);
-      const samplesCount = int16Array.length;
+      const samplesCount = Math.floor(binary.length / 2);
       if (samplesCount === 0) return;
 
       const rate = remoteSampleRate || ctx.sampleRate;
       const audioBuffer = ctx.createBuffer(1, samplesCount, rate);
       const channelData = audioBuffer.getChannelData(0);
 
-      // Convert Int16 back to Float32 [-1, 1]
+      // Robust byte-pair conversion avoiding buffer alignment RangeError across mobile architectures
       for (let i = 0; i < samplesCount; i++) {
-        channelData[i] = int16Array[i] / 32768.0;
+        const low = binary.charCodeAt(i * 2);
+        const high = binary.charCodeAt(i * 2 + 1);
+        let sample = (high << 8) | low;
+        if (sample >= 0x8000) sample -= 0x10000;
+        channelData[i] = sample / 32768.0;
       }
 
       const source = ctx.createBufferSource();

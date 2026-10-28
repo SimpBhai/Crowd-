@@ -26,6 +26,45 @@ export type GpsEngineStatus =
 export type GpsFixCallback = (fix: GpsTelemetryFix) => void;
 export type GpsStatusCallback = (status: GpsEngineStatus, message: string) => void;
 
+// Inaudible Audio Keep-Alive for continuous background execution on iOS Safari & Android Chrome
+class BackgroundAudioKeepAlive {
+  private audioCtx: AudioContext | null = null;
+  private osc: OscillatorNode | null = null;
+  private gain: GainNode | null = null;
+  private isRunning: boolean = false;
+
+  public start(): void {
+    if (this.isRunning || typeof window === "undefined") return;
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      this.audioCtx = new AudioCtx();
+      this.osc = this.audioCtx.createOscillator();
+      this.gain = this.audioCtx.createGain();
+      // Near-zero inaudible volume to keep browser engine active in background
+      this.gain.gain.value = 0.00001;
+      this.osc.frequency.value = 25; // 25Hz inaudible sub-bass
+      this.osc.connect(this.gain);
+      this.gain.connect(this.audioCtx.destination);
+      this.osc.start();
+      this.isRunning = true;
+    } catch (e) {
+      console.warn("Background audio keep-alive note:", e);
+    }
+  }
+
+  public stop(): void {
+    if (!this.isRunning) return;
+    try {
+      this.osc?.stop();
+      this.osc?.disconnect();
+      this.gain?.disconnect();
+      this.audioCtx?.close();
+    } catch (_) {}
+    this.isRunning = false;
+  }
+}
+
 class GpsEngine {
   private watchId: number | null = null;
   private lastFix: GpsTelemetryFix | null = null;
@@ -33,12 +72,35 @@ class GpsEngine {
   private statusCallbacks: Set<GpsStatusCallback> = new Set();
   private currentStatus: GpsEngineStatus = "idle";
   private isWatching = false;
-  private lastStatusMessage = "GPS initialized";
+  private lastStatusMessage: string = "GPS initialized";
   private retryUpgradeTimer: any = null;
+  private backgroundAudio = new BackgroundAudioKeepAlive();
+  private backgroundHeartbeatTimer: any = null;
+  private activeUserId: string | null = null;
 
   constructor() {
     this.hydrateFromStorage();
     this.listenToPermissionChanges();
+    this.startBackgroundHeartbeat();
+  }
+
+  public setUserId(id: string | null): void {
+    this.activeUserId = id;
+    if (id && typeof window !== "undefined") {
+      try {
+        localStorage.setItem("crowd_user_id", id);
+      } catch (_) {}
+    }
+  }
+
+  private startBackgroundHeartbeat(): void {
+    if (typeof window === "undefined") return;
+    if (this.backgroundHeartbeatTimer) clearInterval(this.backgroundHeartbeatTimer);
+    this.backgroundHeartbeatTimer = setInterval(() => {
+      if (document.visibilityState === "hidden" && this.lastFix) {
+        this.transmitBackgroundPing(this.lastFix);
+      }
+    }, 25000);
   }
 
   /**
@@ -135,6 +197,42 @@ class GpsEngine {
     } catch (_) {}
 
     this.fixCallbacks.forEach((cb) => cb(smoothedFix));
+
+    // Direct background continuous transmission (works while phone is locked or app is in pocket)
+    this.transmitBackgroundPing(smoothedFix);
+  }
+
+  private transmitBackgroundPing(fix: GpsTelemetryFix): void {
+    if (typeof window === "undefined") return;
+    try {
+      const targetUid = this.activeUserId || localStorage.getItem("crowd_user_id");
+      if (!targetUid) return;
+
+      const payload = JSON.stringify({
+        userId: targetUid,
+        lat: fix.lat,
+        lng: fix.lng,
+        altitude: fix.altitude,
+        accuracy: fix.accuracy,
+        speed: fix.speed,
+        heading: fix.heading,
+        movementStatus: (fix.speed || 0) > 12 ? "running" : (fix.speed || 0) > 2 ? "walking" : "stationary",
+        timestamp: fix.timestamp,
+      });
+
+      // Transmit to background endpoint with keepalive: true so browser delivers it even if screen is off
+      fetch("/api/gps/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+        keepalive: true,
+      }).catch(() => {
+        if ("sendBeacon" in navigator) {
+          const blob = new Blob([payload], { type: "application/json" });
+          navigator.sendBeacon("/api/gps/beacon", blob);
+        }
+      });
+    } catch (_) {}
   }
 
   public getLastFix(): GpsTelemetryFix | null {
@@ -260,6 +358,9 @@ class GpsEngine {
     this.isWatching = true;
     this.setStatus("acquiring", "Live continuous positioning active");
 
+    // Maintain background audio context so mobile OS does not pause geolocation when screen sleeps
+    this.backgroundAudio.start();
+
     const launchWatcher = (highAccuracy: boolean) => {
       if (this.watchId !== null) {
         navigator.geolocation.clearWatch(this.watchId);
@@ -340,6 +441,7 @@ class GpsEngine {
   }
 
   public stopContinuousWatching(): void {
+    this.backgroundAudio.stop();
     if (this.watchId !== null && typeof navigator !== "undefined" && "geolocation" in navigator) {
       navigator.geolocation.clearWatch(this.watchId);
       this.watchId = null;

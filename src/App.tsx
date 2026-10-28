@@ -39,6 +39,8 @@ export default function App() {
 
   // Navigation Tabs
   const [currentTab, setCurrentTab] = useState<TabType>("home");
+  const currentTabRef = useRef<TabType>(currentTab);
+  currentTabRef.current = currentTab;
 
   // Real-time State
   const [users, setUsers] = useState<UserRecord[]>([]);
@@ -117,6 +119,10 @@ export default function App() {
           if (data.user) {
             setCurrentUser(data.user);
             setAuthToken(savedToken);
+            gpsEngine.setUserId(data.user.id);
+            try {
+              localStorage.setItem("crowd_user_id", data.user.id);
+            } catch (_) {}
           } else {
             setIsLoginModalOpen(true);
           }
@@ -298,7 +304,7 @@ export default function App() {
                 if (prev.some((m) => m.id === payload.message.id)) return prev;
                 return [...prev, payload.message];
               });
-              if (currentTab !== "messages" && payload.message.senderId !== currentUser?.id) {
+              if (currentTabRef.current !== "messages" && payload.message.senderId !== currentUserRef.current?.id) {
                 setUnreadMessagesCount((c) => c + 1);
               }
             }
@@ -698,7 +704,7 @@ export default function App() {
       socket.close();
       wsRef.current = null;
     };
-  }, [currentUser, currentTab, isRealGpsActive, fetchLogs, fetchUsers]);
+  }, [currentUser?.id, fetchLogs, fetchUsers]);
 
   // Call duration timer
   useEffect(() => {
@@ -758,6 +764,17 @@ export default function App() {
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         requestWakeLock();
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && currentUserRef.current) {
+          try {
+            wsRef.current.send(
+              JSON.stringify({
+                type: "auth:identify",
+                userId: currentUserRef.current.id,
+              })
+            );
+          } catch (_) {}
+        }
+        gpsEngine.requestDirectFix().catch(() => {});
       }
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -846,18 +863,35 @@ export default function App() {
           )
         );
 
+        const gpsPayload = {
+          userId,
+          lat: fix.lat,
+          lng: fix.lng,
+          speed: fix.speed,
+          heading: fix.heading,
+          accuracy: fix.accuracy,
+        };
+
         // Forward to real-time WebSocket mesh network
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
           wsRef.current.send(
             JSON.stringify({
               type: "gps:update",
-              lat: fix.lat,
-              lng: fix.lng,
-              speed: fix.speed,
-              heading: fix.heading,
-              accuracy: fix.accuracy,
+              ...gpsPayload,
             })
           );
+        } else {
+          // Robust background HTTP Keep-Alive transmission when WebSocket is suspended in background
+          fetch("/api/gps/update", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(gpsPayload),
+            keepalive: true,
+          }).catch(() => {
+            if ("sendBeacon" in navigator) {
+              navigator.sendBeacon("/api/gps/beacon", JSON.stringify(gpsPayload));
+            }
+          });
         }
       },
       (status, message) => {
@@ -949,6 +983,7 @@ export default function App() {
   const handleLoginSuccess = (user: UserRecord, token: string) => {
     setCurrentUser(user);
     setAuthToken(token);
+    gpsEngine.setUserId(user.id);
     try {
       localStorage.setItem("crowd_auth_token", token);
       localStorage.setItem("crowd_user_id", user.id);
@@ -958,10 +993,26 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    const loggingOutUserId = currentUser?.id;
+    const currentToken = authToken;
+    gpsEngine.setUserId(null);
     try {
       localStorage.removeItem("crowd_auth_token");
       localStorage.removeItem("crowd_user_id");
     } catch (_) {}
+
+    // Explicitly notify server that user voluntarily logged out
+    if (loggingOutUserId) {
+      apiFetch("/api/auth/logout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: currentToken ? `Bearer ${currentToken}` : "",
+        },
+        body: JSON.stringify({ userId: loggingOutUserId }),
+      }).catch(() => {});
+    }
+
     setCurrentUser(null);
     setAuthToken(null);
     setIsLoginModalOpen(true);
@@ -1693,6 +1744,7 @@ export default function App() {
       setActiveChatRecipientId(user.id);
     }
     setCurrentTab("messages");
+    setUnreadMessagesCount(0);
     setSelectedUser(user);
   };
 
@@ -1866,6 +1918,7 @@ export default function App() {
             onViewLocationOnMap={handleViewLocationOnMap}
             initialRecipientId={activeChatRecipientId}
             onOpenLogin={() => setIsLoginModalOpen(true)}
+            onClearUnreadBadge={() => setUnreadMessagesCount(0)}
           />
         )}
 
